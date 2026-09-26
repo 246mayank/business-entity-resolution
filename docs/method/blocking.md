@@ -96,3 +96,37 @@ Open items: abbreviation mining from GT pairs; a phonetic key for typos.
 4. **Exact keys**: `(house_no, first street token)`, `(name_core)`; skip keys shared by > 200 records.
 5. **Reverse direction**: each S2/S3 record → top-3 S1s (records have exactly one owner).
 Per-source top-K so S2 and S3 each get slots (85% of S1s match both).
+
+## 3. blocking.py v1 (2026-09-26)
+
+Per country; S2 and S3 form one pool; sparse TF-IDF top-K with `sparse_dot_topn`; absolute document-frequency cap `MAX_DF = 3000` (a relative cap made postings — and cost — grow with data size: 0.005 on 4M records = 20k postings).
+
+| blocker (flag) | vectors | K |
+|---|---|---|
+| name (1) | `name_core` word 1–2-grams | 10 per source |
+| address (2) | `addr_clean` words | 10 per source |
+| combined (16) | name ⊕ address (cosine = mean) | 10 per source |
+| place-conditioned combined (16) | same, searched within every shared `addr_places` value (groups ≤ 300k) | 10 |
+| char4 (4) | `name_nospace` char 4-grams, only against single-token/domain names | 5 |
+| reverse (8) | each S2/S3 record → top-3 S1 on the combined vector | 3 |
+
+Pairs are scored (`blk_name_sim`, `blk_addr_sim` = cosines), ranked, capped at 60 per S1 (a record's best S1 is kept up to rank 120).
+
+### Results
+**Sample (`sample_5pct`, valid fold)**: pair recall **0.992**, 51.5 candidates/S1, entities with full recall 0.973, oracle F0.5 **0.998**, 117 s.
+
+**Full density (20k-S1 slice vs the full train pool of the country)** — the sample is optimistic (12× fewer distractors):
+
+| recall | India (pool 4.1M) | US (pool 6.2M) |
+|---|---|---|
+| name alone | 0.54 | 0.63 |
+| address alone | 0.66 | 0.59 |
+| place-conditioned combined | **0.88** | **0.89** |
+| all (reverse inflated by the slice) | 0.90 | 0.91 |
+
+Generic names ("… private limited") and the df cap (which removes city/state words) make the global name/address searches weak at full density; conditioning on a shared address place is what separates them. Slice runs take 270–400 s, dominated by fitting/transforming the full pool.
+
+### Next
+1. Full-train run for true recall and timing (the slice numbers for reverse and candidates/S1 are distorted).
+2. Recall: raise `K_PLACE`, search place groups by source, add a street-level key (`house_no` + street word) within place groups.
+3. Speed: fit vectorizers once per country and reuse for train/test; cache matrices.
