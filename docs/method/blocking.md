@@ -138,6 +138,17 @@ Time 70.5 min on the 16 GB laptop: India 883k x 4.1M in 57 min (large state-leve
 | char 4-grams (squashed names) | 0.051 | 14,599 | 9.8M |
 | reverse | 0.867 | 5,500 | 22.8M |
 
+### Test (2026-09-26)
+86.8M pairs, 52 min at below-normal priority (France 1 min, India 45 min, US 4.5 min); peak free RAM stayed >= 1.4 GB with the lighter C2 check (#9).
+
+| country | S1 | candidates/S1 (mean / median / max) | S1 without candidates |
+|---|---|---|---|
+| France | 259,452 | 54.0 / 57 / 109 | 23 |
+| India | 809,986 | 49.6 / 51 / 116 | 421 |
+| US | 663,106 | 49.2 / 50 / 108 | 60 |
+
+France (no labels) gets the same candidate volume as the labelled countries (train median 50).
+
 ### Next
 1. Recall 0.945 → ≥ 0.95: raise `K_PLACE`, place search per source, a street-level key (`house_no` + street word) within place groups.
 2. Recall: raise `K_PLACE`, search place groups by source, add a street-level key (`house_no` + street word) within place groups.
