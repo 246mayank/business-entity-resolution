@@ -57,6 +57,27 @@ Owner: Mayank. Source of the numbers: `notebooks/A_01_text_eda.ipynb` (5% dev sa
 
 ## 2. Design decisions that follow
 
+### normalize.py v1 — implemented 2026-09-26
+- Indic dictionary learned from train GT pairs (names + addresses): 1,236 tokens, 66 s; covers ~91% of Indic token occurrences even when learned from the 5% sample only. Stored in `cache/norm/indic_dict.parquet`.
+- Full run (train + test + sample, 23M records, one process per split): ~4 min, peak ~5 GB per process.
+- Effect on true-match pairs (sample, 60k GT pairs), stub normalisation → normalize v1:
+
+| | stub | normalize v1 |
+|---|---|---|
+| name shares a token (all pairs) | 0.859 | 0.914 |
+| name shares a token (native-script pairs) | 0.523 | **0.943** |
+| name `ratio` p10 / p25 / p50 | 64 / 75 / 88 | 67 / 84 / 100 |
+| address `token_set_ratio` p10 / p25 / p50 | 74 / 86 / 94 | 83 / 94 / 100 |
+
+### normalize.py v2 — learned place map (2026-09-26)
+- `learn_place_map`: per country, a digit-free S2/S3 address component that S1 of the same country almost never uses (S1 frequency < 5% of S2/S3 frequency) is linked to the S1 component it co-occurs with in ≥ 80% of its matched pairs (1.5M train GT pairs, 10 s). 94 variants: all Indian state codes (`mh dl up ka tn wb gj tg hr rj kl br mp ap pb od`), transliteration leftovers (`tamil`, `pshcimbng`→west bengal, `keralam`, `andhra`), city aliases (`bombay`→mumbai, `poona`→pune), US (`ft worth`, `street louis`→saint louis, suburbs → city/state).
+- The target is **appended** (`mh` → `mh maharashtra`), never replacing, and only for records of the country it was learned in (`tn` = Tamil Nadu only in India; 0 of 138k US `tn` records touched). France has no labels → no map.
+- India records with a canonical state name: S2 97.1%, S3 96.9% (S1 100%).
+- Full run now ~8 min (per-country mapping adds a pass).
+
+Open items: abbreviation mining from GT pairs; a phonetic key for typos.
+
+
 ### normalize.py
 1. NFKC; drop zero-width chars and C1 control chars; fold accents (é→e) — needed for injected accents and for French.
 2. **Indic → Latin with a learned dictionary**, not raw unidecode: build `token → english` from train GT pairs where the S2/S3 side is native script and S1 is Latin (align by position / best char similarity of the unidecode form). Fallback: unidecode + phonetic simplification (collapse doubled vowels/consonants, `tt→t`, `dd→d`, drop trailing `a`/`i` doubling). Also map native state names → English via the same pair mining on addresses (only ~30 values).
@@ -64,7 +85,7 @@ Owner: Mayank. Source of the numbers: `notebooks/A_01_text_eda.ipynb` (5% dev sa
 4. **DBA / aka**: keep the part after `dba`/`aka` as the name (store the alias separately as an extra column).
 5. **Domain names**: strip `www.` and the TLD, mark `is_domain`; downstream compares the space-less form.
 6. Legal forms anywhere in the name (front, back, in brackets) → canonical `legal_form`, removed from `name_core`. Include French forms (`sarl sas sasu eurl sa sci snc ei cie`) — spotted in the test data itself.
-7. Extra C1 columns to add (allowed by the contract): `name_nospace` (name_core without spaces, for domain-squashed names), `addr_street` (house number + street words), `addr_city`, `addr_region` (last-component guesses), `is_domain`.
+7. Extra C1 columns (allowed by the contract): `name_nospace` (name_core without spaces, for domain-squashed names), `name_alias` (text before DBA/aka), `is_domain`, `addr_street` (the address component holding the house number), `addr_places` (list of address components without digits — city, district, state/region, in any order). A learned city/region split was tried and dropped: no frequency or co-occurrence rule separated cities from regions for all three countries (France S1 often ends with the city; `mumbai`/`ground floor` behave like regions in India) — compare `addr_places` as a set instead.
 8. `postcode` stays in C1 but will be nearly always empty; `house_no` = first number-like token (incl. `12/3`, `59A`, `8-2-67/1`), `bis/ter` dropped.
 9. Null placeholders (`null`, `<null>`, `n/a`, `none`) removed from addresses.
 
