@@ -126,7 +126,19 @@ Pairs are scored (`blk_name_sim`, `blk_addr_sim` = cosines), ranked, capped at 6
 
 Generic names ("… private limited") and the df cap (which removes city/state words) make the global name/address searches weak at full density; conditioning on a shared address place is what separates them. Slice runs take 270–400 s, dominated by fitting/transforming the full pool.
 
+### Full train (2026-09-26) — the real numbers
+Valid fold of full train (all 2.2M S1 blocked against the full pools): **pair recall 0.945**, **49.1 candidates/S1**, entities with full recall 0.850, entities with zero recall 0.008, **oracle F0.5 0.979**. 108.3M pairs, 956 MB Parquet.
+Time 70.5 min on the 16 GB laptop: India 883k x 4.1M in 57 min (large state-level place groups make the place-conditioned search expensive), US 1.32M x 6.2M in 11 min. Peak: ~8 GB working set, commit charge 33 of 34 GB and free RAM down to 0.3 GB while validating/writing C2 (`contracts.write_candidates` loads every column of all records — make it load only ids + country).
+
+| blocker | recall alone | true pairs found only by it | pairs |
+|---|---|---|---|
+| name words | 0.598 | 5,250 | 41.6M |
+| address words | 0.599 | 1,148 | 39.8M |
+| combined + place-conditioned | **0.917** | **53,994** | 60.6M |
+| char 4-grams (squashed names) | 0.051 | 14,599 | 9.8M |
+| reverse | 0.867 | 5,500 | 22.8M |
+
 ### Next
-1. Full-train run for true recall and timing (the slice numbers for reverse and candidates/S1 are distorted).
+1. Recall 0.945 → ≥ 0.95: raise `K_PLACE`, place search per source, a street-level key (`house_no` + street word) within place groups.
 2. Recall: raise `K_PLACE`, search place groups by source, add a street-level key (`house_no` + street word) within place groups.
 3. Speed: fit vectorizers once per country and reuse for train/test; cache matrices.
