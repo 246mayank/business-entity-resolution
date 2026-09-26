@@ -53,7 +53,7 @@ Pipeline per field (vectorised with Polars string ops wherever possible; Python 
 8. US state names ↔ codes: map to codes (list mined from train pairs; ~60 values). Indian states: fold spelling variants.
 Tests: table-driven cases from real examples (the ones in CLAUDE.md), plus property tests (idempotent, never raises on empty strings, preserves row count & ids). Performance target: full train+test (~23M rows) in < 15 min locally.
 
-## A3 — `src/blocking.py` v1 → real C2
+## A3 — `src/blocking.py` v1 → real C2 ✅ v1 on sample 2026-09-26 (full-scale validation pending, see `docs/method/blocking.md` §3)
 > **Revised after A1 EDA**: drop the postcode key; blockers = name char-TF-IDF on `name_nospace`, address TF-IDF, name+address TF-IDF, `(house_no, street token)` / exact-name keys, reverse top-3. See `docs/method/blocking.md` §2.
 
 Public API: `build_candidates(dataset: str) -> None` writes C2 and returns stats; CLI `python -m src.blocking --dataset sample_5pct`.
