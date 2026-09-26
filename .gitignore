@@ -1,0 +1,31 @@
+# Competition data (2.4 GB, exceeds GitHub limits) — each collaborator unzips it locally
+dataset/
+*.zip
+
+# Generated artifacts
+cache/
+models/
+*.parquet
+*.npz
+*.pkl
+*.joblib
+*.lgb
+*.onnx
+
+# Full-size outputs are huge; commit only intentionally (git add -f)
+output/*.tsv
+!output/.gitkeep
+
+# Python / notebooks
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.venv/
+venv/
+.env
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
