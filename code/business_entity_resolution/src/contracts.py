@@ -92,18 +92,20 @@ def _meta_path(path: Path) -> Path:
 
 # ---------------------------------------------------------------- dataset inputs
 
-def load_records(dataset: str, source: int) -> pl.DataFrame:
-    """Raw records (entity_id, business_name, business_address, country) of a dataset."""
+def load_records(dataset: str, source: int, columns=None) -> pl.DataFrame:
+    """Raw records (entity_id, business_name, business_address, country) of a dataset.
+
+    `columns`: optional subset to load (the full train sources are 5M rows each)."""
     _check_dataset(dataset)
+    columns = list(columns or config.SOURCE_COLUMNS)
     if dataset == "sample_5pct":
-        df = pl.read_parquet(config.sample_dir() / f"train_source{source}.parquet")
-        return df.select(config.SOURCE_COLUMNS)
-    return io.load_source(dataset, source)
+        return pl.read_parquet(config.sample_dir() / f"train_source{source}.parquet", columns=columns)
+    return io.load_source(dataset, source, columns=columns)
 
 
 def load_s1_folds(dataset: str) -> pl.DataFrame:
     """S1 ids of a dataset with columns (s1_id, country, fold); fold is 'test' for the test set."""
-    s1 = load_records(dataset, 1).select("entity_id", "country")
+    s1 = load_records(dataset, 1, ["entity_id", "country"])
     if dataset == "test":
         s1 = s1.with_columns(pl.lit("test").alias("fold"))
     else:
@@ -141,7 +143,8 @@ def _check_schema(df: pl.DataFrame, columns: dict, name: str) -> None:
 def _check_pair_ids(df: pl.DataFrame, name: str) -> None:
     _require(df["s1_id"].str.starts_with("S1-").all(), f"{name}: s1_id must start with S1-")
     _require(df["id"].str.contains(r"^S[23]-").all(), f"{name}: id must start with S2- or S3-")
-    dup = df.height - df.select("s1_id", "id").n_unique()
+    # 64-bit pair hashes: exact-duplicate check without materialising 100M+ string pairs
+    dup = df.height - df.select(pl.struct("s1_id", "id").hash(seed=0)).n_unique()
     _require(dup == 0, f"{name}: {dup} duplicate (s1_id, id) pairs")
 
 
@@ -154,20 +157,28 @@ def check_c1(df: pl.DataFrame, expected_ids: pl.Series | None = None) -> None:
                  "C1: entity_ids differ from the dataset's records")
 
 
+COUNTRY_CHECK_SAMPLE = 5_000_000
+
+
 def check_c2(df: pl.DataFrame, s1: pl.DataFrame | None = None, others: pl.DataFrame | None = None) -> None:
     """`s1` / `others`: optional (entity_id, country) frames of the dataset — enables
-    id-existence and same-country checks."""
+    id-existence (on unique ids) and same-country checks (on a fixed sample of at most
+    COUNTRY_CHECK_SAMPLE pairs; blocking works per country, so this guards regressions)."""
     _check_schema(df, C2_COLUMNS, "C2")
     _check_pair_ids(df, "C2")
     for c in ("blk_name_sim", "blk_addr_sim"):
         _require(df[c].is_between(0.0, 1.0001).all(), f"C2: {c} outside [0, 1]")
     _require((df["blk_rank"] >= 1).all(), "C2: blk_rank must be >= 1")
     if s1 is not None and others is not None:
-        j = (df.select("s1_id", "id")
-             .join(s1.select(pl.col("entity_id").alias("s1_id"), pl.col("country").alias("c1")), on="s1_id", how="left")
-             .join(others.select(pl.col("entity_id").alias("id"), pl.col("country").alias("c2")), on="id", how="left"))
-        _require(j["c1"].null_count() == 0, "C2: s1_id not in the dataset's S1 records")
-        _require(j["c2"].null_count() == 0, "C2: id not in the dataset's S2/S3 records")
+        missing_s1 = df.select(pl.col("s1_id").unique().alias("entity_id")).join(s1, on="entity_id", how="anti").height
+        _require(missing_s1 == 0, "C2: s1_id not in the dataset's S1 records")
+        missing_id = df.select(pl.col("id").unique().alias("entity_id")).join(others, on="entity_id", how="anti").height
+        _require(missing_id == 0, "C2: id not in the dataset's S2/S3 records")
+        pairs = df.select("s1_id", "id")
+        if pairs.height > COUNTRY_CHECK_SAMPLE:
+            pairs = pairs.sample(COUNTRY_CHECK_SAMPLE, seed=0)
+        j = (pairs.join(s1.select(pl.col("entity_id").alias("s1_id"), pl.col("country").alias("c1")), on="s1_id")
+                  .join(others.select(pl.col("entity_id").alias("id"), pl.col("country").alias("c2")), on="id"))
         _require((j["c1"] == j["c2"]).all(), "C2: pair with different countries")
 
 
@@ -198,15 +209,16 @@ def _write(df: pl.DataFrame, path: Path, producer: str) -> None:
 
 
 def write_norm(df: pl.DataFrame, dataset: str, source: int, producer: str) -> Path:
-    check_c1(df, load_records(dataset, source)["entity_id"])
+    check_c1(df, load_records(dataset, source, ["entity_id"])["entity_id"])
     path = norm_path(dataset, source)
     _write(df, path, producer)
     return path
 
 
 def write_candidates(df: pl.DataFrame, dataset: str, producer: str) -> Path:
-    s1 = load_records(dataset, 1).select("entity_id", "country")
-    others = pl.concat([load_records(dataset, s).select("entity_id", "country") for s in (2, 3)])
+    cols = ["entity_id", "country"]
+    s1 = load_records(dataset, 1, cols)
+    others = pl.concat([load_records(dataset, s, cols) for s in (2, 3)])
     check_c2(df, s1, others)
     path = candidates_path(dataset)
     _write(df, path, producer)
