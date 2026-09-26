@@ -56,3 +56,9 @@ Macro F0.5 per S1 entity, averaged over **all** S1 entities (singletons included
 - Git repo root = `student_resource/`. `dataset/`, `cache/`, `models/`, `*.zip`, and full-size `output/*.tsv` are gitignored (GitHub 100 MB file limit; competition data stays out of the repo).
 - New collaborator: clone, then unzip the organisers' `student_resource.zip` and copy its `dataset/` folder into the repo root.
 - Work on feature branches, merge to `main` via PR; keep `main` runnable.
+
+## Compute resources (from organisers' AWS PDF)
+- Each team member gets their own AWS Free Tier account: up to $200 credits (6 months). SageMaker 2-month trial = 250 h `ml.t3.medium` notebook (2 vCPU / 4 GB — too small for this data) + 50 h `ml.m4/m5.xlarge` training (4 vCPU / 16 GB ≈ our laptop). S3 free: 5 GB, 20k GET, 2k PUT / month.
+- Top-500 leaderboard teams get extra credit codes.
+- Plan: develop + train locally (16 GB). Use AWS only for full-scale blocking/inference if local RAM is not enough — a memory-optimised EC2/SageMaker instance paid from credits, same region for every member, stop it after each run, set a billing alert.
+- Share large files between members via one S3 bucket (bucket policy or `aws s3 presign`); never commit them to git.
