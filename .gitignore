@@ -31,3 +31,4 @@ Thumbs.db
 .idea/
 .pytest_cache/
 CLAUDE.local.md
+logs/
