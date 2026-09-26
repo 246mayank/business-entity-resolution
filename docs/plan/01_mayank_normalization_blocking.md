@@ -69,7 +69,7 @@ Measure with `evaluate.blocking_report` per blocker (ablation table in `A_log.md
 
 Empty addresses (~3.4% of S2/S3): they can only be found by name blockers — check their recall separately.
 
-## A4 — `src/run_pipeline.py`
+## A4 — `src/run_pipeline.py` ✅ written 2026-09-26 (tested with a fake predict module; end-to-end run after Track B merges)
 `python -m src.run_pipeline --dataset {sample_5pct|train|test} [--steps normalize,block,features,train,predict,write]`
 Calls public functions only: `normalize.normalize_all`, `blocking.build_candidates`, `features.build_features`, `train.fit`, `predict.score`, `predict.decide`. Writes `output/candidate_pairs.tsv` (from C2) and `output/matching_results.tsv` (from C4) with `io_utils.write_id_lists`, over **all** S1 ids of the dataset; for `test` runs the organisers' validator at the end. For `sample_5pct`/`train` prints `evaluate.score_report` on the valid fold. Until Yash’s modules exist, the features/train/predict steps can be skipped with `--steps`.
 

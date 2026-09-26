@@ -19,6 +19,7 @@ pip install -r requirements.txt
 | 2b. Stub C1/C2 for the sample (until real normalize/blocking land) | `python -m src.stub` | `cache/norm/sample_5pct_*`, `cache/candidates/sample_5pct.parquet` (~1 min) |
 | 2c. Normalise records (C1) | `python -m src.normalize` | `cache/norm/*` for train, test, sample (~4 min; learns `indic_dict.parquet` first) |
 | 2d. Candidate pairs (C2) | `python -m src.blocking --dataset sample_5pct` | `cache/candidates/sample_5pct.parquet` (~2 min; prints recall on the valid fold) |
+| End to end | `python -m src.run_pipeline --dataset sample_5pct` then `python -m src.run_pipeline --dataset test --model-from sample_5pct` | dev outputs in `output/dev/<dataset>/`; test outputs in `output/` + validator |
 | 3. Score a submission on train | `python -m src.evaluate --matching FILE [--candidates FILE]` | macro F0.5, blocking recall |
 | Tests | `python -m pytest -q tests` | |
 
@@ -29,6 +30,7 @@ Blocking, features, training and prediction (`blocking.py`, `features.py`,
 - `contracts.py` — stage interfaces C1–C4 (columns, dtypes, paths), validators, `write_*`/`load_*` helpers, dataset loaders (`load_records`, `load_s1_folds`, `load_ground_truth`). See `docs/plan/00_combined_plan.md` §3.
 - `normalize.py` — raw records → C1 + extras (`name_nospace`, `name_alias`, `is_domain`, `addr_street`, `addr_places`); learned Indic→English token dictionary.
 - `blocking.py` — C1 → C2: per-country sparse TF-IDF top-K (name, address, combined, place-conditioned, char 4-grams, reverse).
+- `run_pipeline.py` — orchestrates normalize → block → features → train → predict → write → validate (`--steps` for a subset).
 - `stub.py` — throwaway contract-valid C1/C2 for `sample_5pct`.
 - `config.py` — paths, seeds, sample/validation bucketing (by numeric entity id, deterministic).
 - `io_utils.py` — TSV reading (all strings, no quoting/NA inference), Parquet cache, submission writers.
