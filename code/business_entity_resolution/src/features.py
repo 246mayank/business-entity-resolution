@@ -18,15 +18,19 @@ import scipy.sparse as sp
 
 from . import config, contracts as C
 
-CHUNK_SIZE = 50_000   # pairs per rapidfuzz batch
-TFIDF_CHUNK = 100_000  # pairs per TF-IDF cosine batch
+CHUNK_SIZE = 30_000   # pairs per rapidfuzz batch
+TFIDF_CHUNK = 50_000  # pairs per TF-IDF cosine batch
 
 
 # ------------------------------------------------------------------ TF-IDF
 
 def _fit_tfidf(texts: list[str]) -> TfidfVectorizer:
-    vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 3), min_df=3,
-                          max_features=80_000, dtype=np.float32, sublinear_tf=True)
+    # subsample fit corpus to cap RAM — vocab is stable after ~200k texts
+    rng = np.random.default_rng(42)
+    if len(texts) > 200_000:
+        texts = list(rng.choice(texts, 200_000, replace=False))
+    vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 3), min_df=5,
+                          max_features=50_000, dtype=np.float32, sublinear_tf=True)
     vec.fit(texts)
     return vec
 
@@ -127,6 +131,22 @@ def build_features(dataset: str) -> pl.DataFrame:
     pc_match  = ((pairs["pc1"] != "") & (pairs["pc1"] == pairs["pc2"])).cast(pl.Int8)
     hn_match  = ((pairs["hn1"] != "") & (pairs["hn1"] == pairs["hn2"])).cast(pl.Int8)
 
+    # --- new features
+    addr_empty = ((pairs["ac1"] == "") | (pairs["ac2"] == "")).cast(pl.Int8)
+
+    nc1_len = np.array([len(s) for s in nc1], dtype=np.float32)
+    nc2_len = np.array([len(s) for s in nc2], dtype=np.float32)
+    max_len = np.maximum(nc1_len, nc2_len)
+    min_len = np.minimum(nc1_len, nc2_len)
+    name_len_ratio = np.where(max_len > 0, min_len / max_len, 1.0).astype(np.float32)
+
+    addr_name_combo = np.where(
+        (pairs["ac1"].to_numpy(allow_copy=True).astype(str) != "") &
+        (pairs["ac2"].to_numpy(allow_copy=True).astype(str) != ""),
+        0.4 * name_tsr + 0.6 * addr_tsr,
+        name_tsr
+    ).astype(np.float32)
+
     # --- rank gap: difference in blk_name_sim between rank-1 and this pair
     rank1_sim = (
         cands.filter(pl.col("blk_rank") == 1)
@@ -149,6 +169,9 @@ def build_features(dataset: str) -> pl.DataFrame:
         lf_match.alias("lf_match"),
         pc_match.alias("pc_match"),
         hn_match.alias("hn_match"),
+        addr_empty.alias("addr_empty"),
+        pl.Series("name_len_ratio", name_len_ratio),
+        pl.Series("addr_name_combo", addr_name_combo),
         pl.Series("rank_gap",   rank_gap),
         pairs["blk_name_sim"],
         pairs["blk_addr_sim"],
@@ -170,6 +193,7 @@ FEATURE_COLS = [
     "addr_tsr", "addr_part", "addr_cos",
     "lf_match", "pc_match", "hn_match", "rank_gap",
     "blk_name_sim", "blk_addr_sim", "blk_rank", "blk_rev_rank", "blk_flags",
+    "addr_empty", "name_len_ratio", "addr_name_combo",
 ]
 
 
