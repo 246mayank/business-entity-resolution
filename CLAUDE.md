@@ -25,12 +25,19 @@ Macro F0.5 per S1 entity, averaged over **all** S1 entities (singletons included
 | test S1 / S2 / S3 | 1,732,544 / 4,887,273 / 5,082,316 |
 
 - Columns: `entity_id, business_name, business_address, country`. Source = ID prefix.
-- ~74% of S2/S3 records match some S1; ~3.7 matches per non-singleton S1. Hypothesis (verify in EDA): each S2/S3 record maps to at most one S1 → enforce one-owner assignment.
+- ~74% of S2/S3 records match some S1; ~3.7 matches per non-singleton S1 (≈1.8 from S2 + 1.9 from S3), max 11.
+- **Verified: every S2/S3 record belongs to at most one S1** (0 of 7.64M matched ids have 2 owners) → enforce one-owner assignment at prediction time.
+- **Verified: matched pairs always share the same `country`** (0 of 7.64M differ) → blocking within country loses nothing.
+- All GT ids exist in the train sources; no empty names or countries; ~3.4% of S2/S3 addresses are empty (S1 never).
+- Train S1: US 1.32M, India 0.88M. **Test S1: India 0.81M, US 0.66M, France 0.26M (15%)** — France handling matters.
+- Exact normalised-name match within country (5% sample, valid fold): precision 0.46, recall 0.20, macro F0.5 0.364 → names alone are ambiguous (generic names repeat); address evidence is essential.
 - Noise seen: Devanagari/Kannada script names & addresses; junk prefixes (`--`, `<<`); legal suffix moved to front (`Pvt. X Ltd.`, `LLC X`); typos (`Tetlecommunication`); domain-as-name (`foo.com`); UPPERCASE abbreviated S2 addresses; state name vs code (Texas/TX); reordered address components; empty addresses; accents; French forms in test (`Rue`, `bis`, `SARL`).
 
 ## Engineering rules
 - Machine: 15.7 GB RAM local; AWS (Builder Center) available for full-scale runs — code must run on both.
-- Read TSVs with `sep="\t"`, all columns as strings, `keep_default_na=False`, quoting disabled. Convert once to Parquet in `cache/`; downstream code reads Parquet.
+- Read TSVs only through `io_utils.read_tsv` (all strings, empty stays "", quoting disabled). Parquet cache already built by `python -m src.io_utils`; downstream code reads Parquet via `io_utils.load_source` / `load_gt`.
+- Write submission files only through `io_utils.write_id_lists`; score with `src.evaluate` (`score_report`, `blocking_report`). Dev sample: `sample.load_sample()`, validate on `fold == "valid"`.
+- Run Python via the repo `.venv`; set `PYTHONIOENCODING=utf-8` on Windows consoles (Indic text).
 - Never materialise a full cross product. Block within country, process S1 in chunks, use sparse top-K retrieval + exact keys.
 - Develop on a fixed-seed sample (~5% of train S1 + their GT matches + random S2/S3 noise); run full data only for final numbers.
 - Validation split is **by S1 entity** (GroupShuffleSplit/GroupKFold) — never a random pair-level split.
