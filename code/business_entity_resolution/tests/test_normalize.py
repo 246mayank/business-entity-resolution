@@ -97,3 +97,23 @@ def test_output_is_contract_valid_and_ascii():
     for col in ("name_clean", "name_core", "addr_clean"):
         assert out[col].str.contains(r"^[a-z0-9 ]*$").all(), col
     assert out["is_native_script"].to_list() == [True, False, False, False]
+
+
+PLACES = {"India": {"mh": "maharashtra", "tn": "tamil nadu", "bombay": "mumbai"}}
+
+
+def norm_country(addrs, countries):
+    df = pl.DataFrame({"entity_id": [f"S3-{i}" for i in range(len(addrs))], "business_name": ["x"] * len(addrs),
+                       "business_address": addrs, "country": countries})
+    return normalize_frame(df, TABLE, PLACES)
+
+
+def test_place_map_appends_learned_form():
+    out = norm_country(["12 Link Rd, Bombay, MH"], ["India"])
+    assert out["addr_places"][0].to_list() == ["bombay", "mh", "mumbai", "maharashtra"]
+    assert out["addr_clean"][0].endswith("bombay mh mumbai maharashtra")
+
+
+def test_place_map_is_per_country():
+    out = norm_country(["Chennai, TN", "Nashville, TN", "Nantes, Pays de la Loire"], ["India", "US", "France"])
+    assert out["addr_places"].to_list() == [["chennai", "tn", "tamil nadu"], ["nashville", "tn"], ["nantes", "pays de la loire"]]

@@ -69,7 +69,13 @@ Owner: Mayank. Source of the numbers: `notebooks/A_01_text_eda.ipynb` (5% dev sa
 | name `ratio` p10 / p25 / p50 | 64 / 75 / 88 | 67 / 84 / 100 |
 | address `token_set_ratio` p10 / p25 / p50 | 74 / 86 / 94 | 83 / 94 / 100 |
 
-Open items for v2: India state codes (`TN`, `MH`) not mapped to names; abbreviation mining from GT pairs; a phonetic key for typos.
+### normalize.py v2 — learned place map (2026-09-26)
+- `learn_place_map`: per country, a digit-free S2/S3 address component that S1 of the same country almost never uses (S1 frequency < 5% of S2/S3 frequency) is linked to the S1 component it co-occurs with in ≥ 80% of its matched pairs (1.5M train GT pairs, 10 s). 94 variants: all Indian state codes (`mh dl up ka tn wb gj tg hr rj kl br mp ap pb od`), transliteration leftovers (`tamil`, `pshcimbng`→west bengal, `keralam`, `andhra`), city aliases (`bombay`→mumbai, `poona`→pune), US (`ft worth`, `street louis`→saint louis, suburbs → city/state).
+- The target is **appended** (`mh` → `mh maharashtra`), never replacing, and only for records of the country it was learned in (`tn` = Tamil Nadu only in India; 0 of 138k US `tn` records touched). France has no labels → no map.
+- India records with a canonical state name: S2 97.1%, S3 96.9% (S1 100%).
+- Full run now ~8 min (per-country mapping adds a pass).
+
+Open items: abbreviation mining from GT pairs; a phonetic key for typos.
 
 
 ### normalize.py

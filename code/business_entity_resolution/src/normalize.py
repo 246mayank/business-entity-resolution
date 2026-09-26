@@ -17,7 +17,7 @@ from unidecode import unidecode
 from . import config
 from . import contracts as C
 
-PRODUCER = "normalize v1"
+PRODUCER = "normalize v2"
 
 # ---------------------------------------------------------------- vocabularies
 
@@ -223,7 +223,7 @@ def _legal_split(df: pl.DataFrame) -> pl.DataFrame:
 
 # ---------------------------------------------------------------- addresses
 
-def _clean_address(df: pl.DataFrame, table: dict[str, str]) -> pl.DataFrame:
+def _clean_address(df: pl.DataFrame, table: dict[str, str], place_map: "PlaceMap | None" = None) -> pl.DataFrame:
     a = pl.col("_a")
     df = df.with_columns(
         _ascii_lower(_translit_expr("business_address", table).str.replace_all(NULL_RE, " ")).alias("_a"),
@@ -241,6 +241,14 @@ def _clean_address(df: pl.DataFrame, table: dict[str, str]) -> pl.DataFrame:
             .replace(US_STATES)
         ).list.eval(pl.element().filter(pl.element() != "")).alias("addr_parts"),
     )
+    if place_map:
+        # add the learned S1 form next to the variant ("mh" -> "mh", "maharashtra"); nothing is lost
+        added = pl.lit([], dtype=pl.List(pl.String))
+        for country, mapping in place_map.items():
+            added = pl.when(pl.col("country") == country).then(
+                pl.col("addr_parts").list.eval(pl.element().replace_strict(mapping, default=None).drop_nulls())
+            ).otherwise(added)
+        df = df.with_columns(pl.concat_list("addr_parts", added).alias("addr_parts"))
     return df.with_columns(
         pl.col("addr_parts").list.join(" ").alias("addr_clean"),
         # first number-like token of the raw (cleaned) address: 1298, 59a, 570/13, 8-2-67/1
@@ -257,25 +265,76 @@ def _clean_address(df: pl.DataFrame, table: dict[str, str]) -> pl.DataFrame:
     )
 
 
+def learn_place_map(table: dict[str, str], n_pairs: int = 1_500_000, min_count: int = 100,
+                    min_share: float = 0.8, max_s1_ratio: float = 0.05) -> pl.DataFrame:
+    """Learn address-component variants -> S1 form from train GT pairs, per country.
+
+    A digit-free S2/S3 component that S1 addresses of the same country (almost) never use
+    (`mh`, `tamil`, `pshcimbng`, `keralam`) is linked to the S1 component it co-occurs with in
+    at least `min_share` of its matched pairs (highest share wins, ties -> rarest target).
+    "Almost never" = S1 frequency < `max_s1_ratio` x S2/S3 frequency (S1 is ~20% of the rows).
+    Returns (country, variant, target, n, share)."""
+    _, gt = C.load_ground_truth("train")
+    gt = gt.sample(min(n_pairs, gt.height), seed=config.SEED)
+    s1 = C.load_records("train", 1).join(gt.select(pl.col("s1_id").alias("entity_id")).unique(), on="entity_id", how="semi")
+    others = pl.concat([C.load_records("train", s) for s in (2, 3)]).join(
+        gt.select(pl.col("id").alias("entity_id")), on="entity_id", how="semi")
+    places = lambda df: (_normalize(df, table).select("entity_id", "country", "addr_places")
+                         .explode("addr_places", empty_as_null=True).drop_nulls().unique())
+    p1 = places(s1).rename({"entity_id": "s1_id", "addr_places": "target"})
+    p2 = places(others).rename({"entity_id": "id", "addr_places": "variant"})
+    f1 = p1.group_by("country", "target").len("f1")
+    f2 = p2.group_by("country", "variant").len("n").filter(pl.col("n") >= min_count)
+    rare_in_s1 = (f2.join(f1.rename({"target": "variant"}), on=["country", "variant"], how="left")
+                  .filter(pl.col("f1").fill_null(0) < max_s1_ratio * pl.col("n")).select("country", "variant", "n"))
+    co = (gt.join(p2.join(rare_in_s1, on=["country", "variant"], how="semi"), on="id")
+          .join(p1.drop("country"), on="s1_id")
+          .group_by("country", "variant", "target").len("k"))
+    return (co.join(rare_in_s1, on=["country", "variant"]).join(f1, on=["country", "target"])
+            .with_columns((pl.col("k") / pl.col("n")).round(2).alias("share"))
+            .filter(pl.col("share") >= min_share)
+            .sort(["country", "variant", "share", "f1"], descending=[False, False, True, False])
+            .group_by("country", "variant", maintain_order=True).first()
+            .select("country", "variant", "target", "n", "share").sort("n", descending=True))
+
+
+def place_map_path():
+    return config.CACHE_DIR / "norm" / "place_map.parquet"
+
+
+PlaceMap = dict[str, dict[str, str]]
+
+
+def load_place_map() -> PlaceMap:
+    """{country: {variant: target}} — applied only to records of that country
+    (`tn` is Tamil Nadu in India but Tennessee in the US). Countries without labels
+    (France) have no entry and are left unchanged."""
+    d = pl.read_parquet(place_map_path())
+    return {c: dict(zip(g["variant"].to_list(), g["target"].to_list()))
+            for (c,), g in d.group_by("country")}
+
+
 # ---------------------------------------------------------------- public API
 
 EXTRA_COLUMNS = ["name_nospace", "name_alias", "is_domain", "addr_street", "addr_places"]
 
 
-def _normalize(df: pl.DataFrame, table: dict[str, str]) -> pl.DataFrame:
+def _normalize(df: pl.DataFrame, table: dict[str, str], place_map: "PlaceMap | None" = None) -> pl.DataFrame:
     """All derived columns, including the internal `addr_parts` list."""
     out = df.with_columns(
         (pl.col("business_name").str.contains(f"[{INDIC_RANGE}]")
          | pl.col("business_address").str.contains(f"[{INDIC_RANGE}]")).alias("is_native_script"),
         *_name_exprs(table),
     )
-    out = _clean_address(_legal_split(_clean_name(out)), table)
+    out = _clean_address(_legal_split(_clean_name(out)), table, place_map)
     return out.with_columns(pl.col("name_alias").fill_null(""))
 
 
-def normalize_frame(df: pl.DataFrame, table: dict[str, str]) -> pl.DataFrame:
-    """Raw records (entity_id, business_name, business_address, country) -> C1 + extra columns."""
-    return _normalize(df, table).select(*C.C1_COLUMNS, *EXTRA_COLUMNS)
+def normalize_frame(df: pl.DataFrame, table: dict[str, str], place_map: "PlaceMap | None" = None) -> pl.DataFrame:
+    """Raw records (entity_id, business_name, business_address, country) -> C1 + extra columns.
+
+    `table`: Indic token dictionary; `place_map`: learned address-component variants."""
+    return _normalize(df, table, place_map).select(*C.C1_COLUMNS, *EXTRA_COLUMNS)
 
 
 def normalize_all(splits=("train", "test", "sample_5pct"), relearn: bool = False) -> None:
@@ -286,11 +345,17 @@ def normalize_all(splits=("train", "test", "sample_5pct"), relearn: bool = False
         d.write_parquet(indic_dict_path())
         print(f"indic dictionary: {d.height:,} tokens in {time.time() - t:.0f}s")
     table = load_indic_dict()
+    if relearn or not place_map_path().exists():
+        t = time.time()
+        m = learn_place_map(table)
+        m.write_parquet(place_map_path())
+        print(f"place map: {m.height:,} variants in {time.time() - t:.0f}s")
+    place_map = load_place_map()
 
     for dataset in splits:
         t = time.time()
         for source in (1, 2, 3):
-            df = normalize_frame(C.load_records(dataset, source), table)
+            df = normalize_frame(C.load_records(dataset, source), table, place_map)
             C.write_norm(df, dataset, source, producer=PRODUCER)
             print(f"{dataset} S{source}: {df.height:,} rows ({time.time() - t:.0f}s)")
 
@@ -300,7 +365,7 @@ if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="Normalise records into C1.")
     ap.add_argument("--splits", nargs="+", default=["train", "test", "sample_5pct"], choices=C.DATASETS)
-    ap.add_argument("--relearn", action="store_true", help="re-learn the Indic dictionary")
+    ap.add_argument("--relearn", action="store_true", help="re-learn the Indic dictionary and the place map")
     args = ap.parse_args()
     if len(args.splits) == 1:
         normalize_all(tuple(args.splits), args.relearn)
@@ -309,7 +374,7 @@ if __name__ == "__main__":
         # process pushes a 16 GB machine into swapping (10x slower)
         import subprocess
         import sys
-        if args.relearn or not indic_dict_path().exists():
-            normalize_all((), relearn=True)
+        if args.relearn or not (indic_dict_path().exists() and place_map_path().exists()):
+            normalize_all((), relearn=args.relearn)
         for split in args.splits:
             subprocess.run([sys.executable, "-m", "src.normalize", "--splits", split], check=True)
