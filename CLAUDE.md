@@ -69,3 +69,7 @@ Macro F0.5 per S1 entity, averaged over **all** S1 entities (singletons included
 - Top-500 leaderboard teams get extra credit codes.
 - Plan: develop + train locally (16 GB). Use AWS only for full-scale blocking/inference if local RAM is not enough — a memory-optimised EC2/SageMaker instance paid from credits, same region for every member, stop it after each run, set a billing alert.
 - Share large files between members via one S3 bucket (bucket policy or `aws s3 presign`); never commit them to git.
+
+## Team plan
+- Work plan, contracts and file ownership: `docs/plan/00_combined_plan.md`. Track A (Mayank, branch `mayank`): `docs/plan/01_mayank_normalization_blocking.md`. Track B (Yash, branch `yash`): `docs/plan/02_yash_matching_model.md`.
+- Only edit files owned by the current branch's owner (ownership table in the combined plan). Personal notes go in `CLAUDE.local.md` (gitignored).
