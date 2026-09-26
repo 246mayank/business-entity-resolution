@@ -1,3 +1,4 @@
 # Track A (Mayank): normalisation + blocking
 indic-transliteration==2.3.82
 unidecode==1.4.0
+sparse-dot-topn==1.2.0
