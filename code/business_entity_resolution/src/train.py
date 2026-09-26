@@ -34,8 +34,8 @@ LGB_PARAMS = {
     "seed": config.SEED,
     "verbose": -1,
 }
-N_ROUNDS = 500
-EARLY_STOPPING = 50
+N_ROUNDS = 1000
+EARLY_STOPPING = 80
 
 
 def _load_split(dataset: str, fold: str) -> tuple[np.ndarray, np.ndarray, pl.DataFrame]:

@@ -50,7 +50,7 @@ def tune_threshold(dataset: str, scores: pl.DataFrame | None = None,
     gt_pairs_eval = gt_pairs.join(s1_eval, on="s1_id", how="semi")
 
     best_t, best_f = 0.5, 0.0
-    for t in np.arange(0.05, 0.95, 0.05):
+    for t in np.arange(0.02, 0.98, 0.02):
         f = _f05_at_threshold(scores_eval, gt_s1_eval, gt_pairs_eval, float(t))
         if f > best_f:
             best_f, best_t = f, float(t)
@@ -73,11 +73,8 @@ def decide(dataset: str, threshold: float | None = None,
            model: lgb.Booster | None = None) -> pl.DataFrame:
     t0 = time.time()
 
-    # score if not already cached
-    if not C.scores_path(dataset).exists():
-        scores = score(dataset, model)
-    else:
-        scores = C.load_scores(dataset)
+    # always rescore (model may have changed)
+    scores = score(dataset, model)
 
     # tune threshold on valid fold if not given
     if threshold is None:

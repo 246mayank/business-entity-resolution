@@ -14,30 +14,37 @@ import polars as pl
 from rapidfuzz import fuzz
 from rapidfuzz.process import cpdist
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 import scipy.sparse as sp
 
 from . import config, contracts as C
 
 CHUNK_SIZE = 50_000   # pairs per rapidfuzz batch
+TFIDF_CHUNK = 100_000  # pairs per TF-IDF cosine batch
 
 
 # ------------------------------------------------------------------ TF-IDF
 
 def _fit_tfidf(texts: list[str]) -> TfidfVectorizer:
-    vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 4), min_df=2,
-                          max_features=200_000, dtype=np.float32, sublinear_tf=True)
+    vec = TfidfVectorizer(analyzer="char_wb", ngram_range=(2, 3), min_df=3,
+                          max_features=80_000, dtype=np.float32, sublinear_tf=True)
     vec.fit(texts)
     return vec
 
 
-def _cosine_rowwise(a: sp.csr_matrix, b: sp.csr_matrix) -> np.ndarray:
-    """Row-wise cosine similarity between two same-height sparse matrices."""
-    num = np.array(a.multiply(b).sum(axis=1)).ravel()
-    na = np.sqrt(np.array(a.power(2).sum(axis=1))).ravel()
-    nb = np.sqrt(np.array(b.power(2).sum(axis=1))).ravel()
-    denom = na * nb
-    return np.where(denom > 0, num / denom, 0.0).astype(np.float32)
+def _cosine_chunked(vec: TfidfVectorizer, a_texts: list[str],
+                    b_texts: list[str]) -> np.ndarray:
+    """Chunked row-wise cosine similarity to avoid OOM on large pair sets."""
+    out = np.empty(len(a_texts), dtype=np.float32)
+    for i in range(0, len(a_texts), TFIDF_CHUNK):
+        sl = slice(i, i + TFIDF_CHUNK)
+        va = vec.transform(a_texts[sl])
+        vb = vec.transform(b_texts[sl])
+        num = np.array(va.multiply(vb).sum(axis=1)).ravel()
+        na  = np.sqrt(np.array(va.power(2).sum(axis=1))).ravel()
+        nb  = np.sqrt(np.array(vb.power(2).sum(axis=1))).ravel()
+        denom = na * nb
+        out[sl] = np.where(denom > 0, num / denom, 0.0).astype(np.float32)
+    return out
 
 
 # ------------------------------------------------------------------ rapidfuzz helpers
@@ -106,18 +113,14 @@ def build_features(dataset: str) -> pl.DataFrame:
         fit_texts = (pl.concat([n1, nother])["name_core"].to_list())
 
     name_vec = _fit_tfidf(fit_texts)
-    v1n = name_vec.transform(nc1)
-    v2n = name_vec.transform(nc2)
-    name_cos = _cosine_rowwise(v1n, v2n)
+    name_cos = _cosine_chunked(name_vec, nc1, nc2)
 
     # TF-IDF cosine on address
     addr_texts_fit = (pl.concat([n1, nother])["addr_clean"].to_list()
                       if dataset != "test" else
                       pl.concat([train_n1, train_n2, train_n3])["addr_clean"].to_list())
     addr_vec = _fit_tfidf(addr_texts_fit)
-    v1a = addr_vec.transform(ac1)
-    v2a = addr_vec.transform(ac2)
-    addr_cos = _cosine_rowwise(v1a, v2a)
+    addr_cos = _cosine_chunked(addr_vec, ac1, ac2)
 
     # --- exact key features
     lf_match = (pairs["lf1"] == pairs["lf2"]).cast(pl.Int8)
