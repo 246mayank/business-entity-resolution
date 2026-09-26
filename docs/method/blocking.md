@@ -1,0 +1,77 @@
+# Track A method notes — normalisation and blocking
+
+Owner: Mayank. Source of the numbers: `notebooks/A_01_text_eda.ipynb` (5% dev sample `sample_5pct`; test slice = entity ids with `id % 100 < 5`).
+
+## 1. EDA findings (2026-09-26)
+
+### 1.1 Scripts and characters
+- Train S1 and all US records are pure ASCII. **Only S2/S3 India records carry Indic script.**
+  - S2 India: 23% of names and 24% of addresses contain Indic script (Devanagari 13%, then Telugu, Kannada, Tamil, Gujarati, Bengali ~1.5–2% each, Malayalam, Odia, Gurmukhi < 1%). S3 India: 13% of names, 22% of addresses.
+  - Names are **phonetic renderings of English words**, often mixed with Latin: `Silver एस Agro प्राइवेट लिमिटेड`, `गुड कंसल्टेंसी लिमिटेड` (= Good Consultancy Limited), `जय सॉफ्टवेयर प्रा. लि.` (= Jai Software Pvt. Ltd.).
+  - In addresses the native part is **only the state name** at the end: `…, PUNE, महाराष्ट्र`, `…, TIRUPATI, ఆంధ్రప్రదేశ్`, `…, ಕರ್ನಾಟಕ`.
+  - unidecode renders them badly but consistently: `limittedd`, `limittett`, `elelpii` (LLP), `li` (लि. = Ltd), `praaivett` (private), `knslttensii` (consultancy). These are among the top-10 last tokens of S2/S3 India names.
+- Other non-ASCII in S2/S3 (US and India): **injected acute accents** on vowels (`í é ó á` — `Prívate`, `Dívita`, `Léarning`), zero-width non-joiners (U+200C) inside Indic text, a few cp1252 mojibake control chars (`\x80 \x93 \x99`).
+- Test France: 16% of S1 names and 28% of S1 addresses are non-ASCII — real French orthography (é, è, ç, ô, ë) — S2/S3 France ~24%.
+
+### 1.2 Name noise (S2/S3; S1 is clean)
+| pattern | share of S2/S3 names | example (S1 → S2/S3) |
+|---|---|---|
+| leading junk `# @ >> -- *** ... ( [` | 2.3% | `Gujarat Systems Private Limited` → `>> Gujarat Systems Limited [Center]` |
+| token wrapped in `[ ]` (usually last) | ~2.6% | `Infra Rajalakshmi Gallery Corporation` → `Infra Rajalakshmi Gallery [Corp]` |
+| token wrapped in `( )` | ~5% | `Meerut Finance Private Limited` → `Meerut Finance Private (Limited)` |
+| **name squashed into a domain** | 4.5% | `Downtown Auto Body` → `downtownautobody.com`; `Suraj Trading Partners` → `M/s SURAJTRADINGPARTNERS.COM` |
+| **random alias + DBA** (S3 only) | 1.2% | `Harbor Esports L.L.C.` → `Lyraxylo Co DBA Harbor Esports L.L.C.` |
+| `aka` (S3) | 0.2% | |
+| honorific prefix `m/s`, `sri`, `shri`, `shrii`, `smt`, `mr`, `dr`, `the` | India ~1–1.5% each; `the` ~1% | `Sunrise Projects Private Limited` → `Smt Sunrise Projects (Private)` |
+| ALL CAPS | S2 29%, S3 8% | |
+| character typos, digit-for-letter | frequent | `Precision Realty` → `Precisi0n Rlarlty`; `Ridge Project IV` → `ridgepr0jectiv.com` |
+| id / tag suffix | rare | `… Pvt. Ltd. [Services] (ID: 85929)` |
+| duplicated legal words | rare | `… private limited limited` |
+| **name replaced by a random made-up word** | a few % | `Atlantic Center PLLC` → `Zetazeph`; `Rachel Solutions Private Limited` → `Irizeph` (address identical) |
+
+### 1.3 Legal forms (first/last tokens)
+- US S1 last tokens: `llc` (27% of US S1), `inc`, `p c`/`pc`, `pllc`, `corp`, `lp`, `co`, `corporation`, `ltd`. S2/S3 additionally move them to the **front** (`llc …`, `inc …` are top-5 first tokens).
+- India S1 last: `limited` (59%), `ltd`, `llp`, `co`, `company`, `corporation`, `trust`, `society`. S2/S3 front: `private`, `limited`, `pvt`.
+- **France (test)**: last tokens `sarl` (28% of France S1), `sas` (20%), `eurl`, `sa`, `sasu`, `sci`, `ei`, `cie`; first tokens `maison`, **`ets` / `etablissements`** (an abbreviation pair inside the test data), `centre`, `ecole`, `association`, `amicale`, `federation`, `comite`, `club`, `union`, `saint`, `clinique`, `lycee`, `pharmacie`, `ehpad`.
+
+### 1.4 Addresses
+- **Postcodes are essentially absent.** India 6-digit PIN in < 1% of addresses; the 5-digit numbers in ~10% of US addresses are **house numbers** (`22727 MIRAMAR BEND DR`), not ZIPs; France 5-digit < 1%. → the `postcode` column of C1 will be mostly empty; the stub's "postcode" key was in fact a house-number key.
+- Empty address: S1 never; S2/S3 3.3–4.1%. Null placeholders inside addresses: `null`, `NULL`, `<NULL>`, `N/A`.
+- **Component order is shuffled** (comma-separated parts): `Brandenburg, 510 River Rd, # LOT 15, Kentucky`, `MN, Isabella, 1298 Wander Road`.
+- **State level differs between sources**: US S1/S2 use codes (`IN`, `NY`), S3 uses full names (`Indiana`, `Virginia`) and appends `CITY` (`Mansfield CITY`). India: English state names, codes (`TN`, `MH`) or native script. France: S1 uses the **region** (`Pays de la Loire`, `Nouvelle-Aquitaine`), S2/S3 often the **department** (`Loire-Atlantique`, `Gironde`, `Nord`) → region/department must be a weak signal, never a hard key.
+- Street abbreviations: US `ST RD AVE BLVD DR LN CT CIR CV`; India `H.NO`, `NO.`, `FLR`, `BLD`, `C/O`, `S/O`, `W/O`, landmarks `near/opp/behind` (India S1 13%, S2 11%); France `R.` (rue), `AVE`, `BD`, `Imp.` (impasse), `St.-herblain` (Saint-), `bis`/`ter` after numbers.
+- Address typos too: `HAMLT ST`, `KET, OH` (Kent), `AVE DES SPORST`.
+
+### 1.5 What true matches share (true matches vs random same-country pairs, stub-normalised text)
+| evidence | true matches | random pairs |
+|---|---|---|
+| name shares a token (> 2 chars) | 0.86 | 0.18 |
+| name first token equal | 0.74 | 0.001 |
+| address shares a token | 0.95 | 0.14 |
+| first number in address equal (both have one) | 0.79 | 0.005 |
+| median name token_set_ratio | 100 | 34 |
+| median address token_set_ratio | 94 | 37 |
+
+- **14% of true matches share no name token** (India 66% of these). Half of them are native-script names; the rest are domain-squashed names, made-up replacement names, and heavy typos. For all of them the **address** (or character n-grams of the space-less name) is the only route.
+- Multiplicity: 85% of non-singleton S1s have matches in **both** S2 and S3; typically 1–3 per source (max 5 S2, 6 S3).
+
+## 2. Design decisions that follow
+
+### normalize.py
+1. NFKC; drop zero-width chars and C1 control chars; fold accents (é→e) — needed for injected accents and for French.
+2. **Indic → Latin with a learned dictionary**, not raw unidecode: build `token → english` from train GT pairs where the S2/S3 side is native script and S1 is Latin (align by position / best char similarity of the unidecode form). Fallback: unidecode + phonetic simplification (collapse doubled vowels/consonants, `tt→t`, `dd→d`, drop trailing `a`/`i` doubling). Also map native state names → English via the same pair mining on addresses (only ~30 values).
+3. Strip leading junk and bracket characters (keep the bracketed content), `(ID: …)` suffixes, honorifics (`m/s`, `sri`, `shri`, `shrii`, `smt`, `mr`, `dr`, `the`).
+4. **DBA / aka**: keep the part after `dba`/`aka` as the name (store the alias separately as an extra column).
+5. **Domain names**: strip `www.` and the TLD, mark `is_domain`; downstream compares the space-less form.
+6. Legal forms anywhere in the name (front, back, in brackets) → canonical `legal_form`, removed from `name_core`. Include French forms (`sarl sas sasu eurl sa sci snc ei cie`) — spotted in the test data itself.
+7. Extra C1 columns to add (allowed by the contract): `name_nospace` (name_core without spaces, for domain-squashed names), `addr_street` (house number + street words), `addr_city`, `addr_region` (last-component guesses), `is_domain`.
+8. `postcode` stays in C1 but will be nearly always empty; `house_no` = first number-like token (incl. `12/3`, `59A`, `8-2-67/1`), `bis/ter` dropped.
+9. Null placeholders (`null`, `<null>`, `n/a`, `none`) removed from addresses.
+
+### blocking.py (revised blocker set; postcode key dropped)
+1. **Name char n-gram TF-IDF on `name_nospace`** (char 3-grams, no word boundaries) — handles typos, domain-squashing, token splits/merges.
+2. **Address TF-IDF** on `addr_clean` (word + char n-grams) — the only route for made-up names and most native-script names.
+3. **Name + address TF-IDF** — disambiguates generic names.
+4. **Exact keys**: `(house_no, first street token)`, `(name_core)`; skip keys shared by > 200 records.
+5. **Reverse direction**: each S2/S3 record → top-3 S1s (records have exactly one owner).
+Per-source top-K so S2 and S3 each get slots (85% of S1s match both).

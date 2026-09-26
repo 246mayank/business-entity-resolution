@@ -31,12 +31,15 @@ Macro F0.5 per S1 entity, averaged over **all** S1 entities (singletons included
 - All GT ids exist in the train sources; no empty names or countries; ~3.4% of S2/S3 addresses are empty (S1 never).
 - Train S1: US 1.32M, India 0.88M. **Test S1: India 0.81M, US 0.66M, France 0.26M (15%)** — France handling matters.
 - Exact normalised-name match within country (5% sample, valid fold): precision 0.46, recall 0.20, macro F0.5 0.364 → names alone are ambiguous (generic names repeat); address evidence is essential.
+- **No usable postcodes**: India PIN < 1%, US 5-digit numbers are house numbers, France < 1% → don't block on postcode. Address component order is shuffled; state level differs (US code vs full name; France region in S1 vs department in S2/S3).
+- Indic script only in S2/S3 India (~23% of S2 names, mostly Devanagari; in addresses only the state name). 14% of true matches share no name token → address and space-less char n-grams are essential. Details: `docs/method/blocking.md`.
 - Noise seen: Devanagari/Kannada script names & addresses; junk prefixes (`--`, `<<`); legal suffix moved to front (`Pvt. X Ltd.`, `LLC X`); typos (`Tetlecommunication`); domain-as-name (`foo.com`); UPPERCASE abbreviated S2 addresses; state name vs code (Texas/TX); reordered address components; empty addresses; accents; French forms in test (`Rue`, `bis`, `SARL`).
 
 ## Engineering rules
 - Machine: 15.7 GB RAM local; AWS (Builder Center) available for full-scale runs — code must run on both.
 - Read TSVs only through `io_utils.read_tsv` (all strings, empty stays "", quoting disabled). Parquet cache already built by `python -m src.io_utils`; downstream code reads Parquet via `io_utils.load_source` / `load_gt`.
 - Write submission files only through `io_utils.write_id_lists`; score with `src.evaluate` (`score_report`, `blocking_report`). Dev sample: `sample.load_sample()`, validate on `fold == "valid"`.
+- Notebooks: kernel `ber` (`python -m ipykernel install --sys-prefix --name ber`); execute headless with `PYTHONNOUSERSITE=1 .venv/Scripts/python -m nbconvert --execute --ExecutePreprocessor.kernel_name=ber`; commit notebooks without outputs.
 - Run Python via the repo `.venv`; set `PYTHONIOENCODING=utf-8` on Windows consoles (Indic text).
 - Never materialise a full cross product. Block within country, process S1 in chunks, use sparse top-K retrieval + exact keys.
 - Develop on a fixed-seed sample (~5% of train S1 + their GT matches + random S2/S3 noise); run full data only for final numbers.
