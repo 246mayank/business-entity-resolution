@@ -1,0 +1,34 @@
+# File ownership — see docs/plan/00_combined_plan.md §4. Last matching rule wins.
+# Shared-frozen by default: both owners review.
+*                                                         @246mayank @Yashanand13
+
+# Track A — Mayank
+/code/business_entity_resolution/src/normalize.py         @246mayank
+/code/business_entity_resolution/src/blocking.py          @246mayank
+/code/business_entity_resolution/src/run_pipeline.py      @246mayank
+/code/business_entity_resolution/src/stub.py              @246mayank
+/code/business_entity_resolution/tests/test_normalize.py  @246mayank
+/code/business_entity_resolution/tests/test_blocking.py   @246mayank
+/code/business_entity_resolution/tests/test_pipeline.py   @246mayank
+/code/business_entity_resolution/requirements/blocking.txt @246mayank
+/notebooks/A_*                                            @246mayank
+/docs/plan/01_*                                           @246mayank
+/docs/method/blocking.md                                  @246mayank
+/docs/experiments/A_log.md                                @246mayank
+/docs/submissions_log.md                                  @246mayank
+/Documentation_template.md                                @246mayank
+
+# Track B — Yash
+/code/business_entity_resolution/src/features.py          @Yashanand13
+/code/business_entity_resolution/src/train.py             @Yashanand13
+/code/business_entity_resolution/src/predict.py           @Yashanand13
+/code/business_entity_resolution/tests/test_features.py   @Yashanand13
+/code/business_entity_resolution/tests/test_train.py      @Yashanand13
+/code/business_entity_resolution/tests/test_predict.py    @Yashanand13
+/code/business_entity_resolution/requirements/matching.txt @Yashanand13
+/notebooks/B_*                                            @Yashanand13
+/docs/plan/02_*                                           @Yashanand13
+/docs/method/matching.md                                  @Yashanand13
+/docs/experiments/B_log.md                                @Yashanand13
+/docs/REPRODUCE.md                                        @Yashanand13
+/make_submission.*                                        @Yashanand13

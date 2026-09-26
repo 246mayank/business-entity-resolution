@@ -1,0 +1,3 @@
+# Track A (Mayank): normalisation + blocking
+indic-transliteration==2.3.82
+unidecode==1.4.0

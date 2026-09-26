@@ -1,0 +1,2 @@
+# Track B (Yash): features + model + decision
+lightgbm==4.7.0
