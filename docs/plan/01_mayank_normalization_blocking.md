@@ -37,7 +37,7 @@ Answer with numbers on the sample, write conclusions into `docs/method/blocking.
 - **On GT pairs** (the key part): how often match & S1 share postcode / house_no / first name token / any name token; distribution of rapidfuzz `token_set_ratio` on names and addresses for matches vs random same-country pairs. This tells you which blocking keys are safe.
 - **Test France**: 200-row eyeball of test S1/S2/S3 France records — legal forms (SARL, SAS, SASU, EURL, SA, SCI, SNC), street words (rue, avenue, boulevard, bd, chemin, allée, place, bis/ter), postcode position. Note anything train didn’t prepare us for.
 
-## A2 — `src/normalize.py` v1 → real C1
+## A2 — `src/normalize.py` v1 → real C1 ✅ v1 done 2026-09-26 (see `docs/method/blocking.md` §2)
 > **Revised after A1 EDA** — see `docs/method/blocking.md` §2: postcodes are almost never present (5-digit numbers are house numbers); add DBA/domain/bracket/honorific handling, a learned Indic token dictionary, and extra columns `name_nospace`, `addr_street`, `addr_city`, `addr_region`, `is_domain`.
 
 Public API: `normalize_frame(df: pl.DataFrame) -> pl.DataFrame` (C1 columns), `normalize_all(splits=("train","test"))` writing `cache/norm/…`, CLI `python -m src.normalize`.
