@@ -182,13 +182,20 @@ def check_c2(df: pl.DataFrame, s1: pl.DataFrame | None = None, others: pl.DataFr
         _require((j["c1"] == j["c2"]).all(), "C2: pair with different countries")
 
 
+def _pair_hash(df: pl.DataFrame) -> pl.DataFrame:
+    return df.select(pl.struct("s1_id", "id").hash(seed=0).alias("h"))
+
+
 def check_c3(df: pl.DataFrame, c2: pl.DataFrame) -> None:
+    """Scores must cover exactly the C2 pairs of the S1 entities they contain (features may be
+    built for an S1 subset, e.g. --s1-pct on full train). `c2` may be the full C2 or already
+    restricted to those S1s. Pairs are compared as 64-bit hashes (test C3 is ~87M rows)."""
     _check_schema(df, C3_COLUMNS, "C3")
     _check_pair_ids(df, "C3")
     _require(df["prob"].is_between(0.0, 1.0).all(), "C3: prob outside [0, 1]")
-    _require(df.height == c2.height and
-             df.join(c2.select("s1_id", "id"), on=["s1_id", "id"], how="anti").height == 0,
-             "C3: pairs must be exactly the C2 pairs")
+    c2 = c2.select("s1_id", "id").join(df.select("s1_id").unique(), on="s1_id", how="semi")
+    _require(df.height == c2.height and _pair_hash(df).join(_pair_hash(c2), on="h", how="anti").height == 0,
+             "C3: pairs must be exactly the C2 pairs of the scored S1 entities")
 
 
 def check_c4(pairs: pl.DataFrame, c2: pl.DataFrame) -> None:
@@ -226,7 +233,9 @@ def write_candidates(df: pl.DataFrame, dataset: str, producer: str) -> Path:
 
 
 def write_scores(df: pl.DataFrame, dataset: str, producer: str) -> Path:
-    check_c3(df, load_candidates(dataset))
+    c2 = (pl.scan_parquet(candidates_path(dataset)).select("s1_id", "id")
+          .join(df.select("s1_id").unique().lazy(), on="s1_id", how="semi").collect())
+    check_c3(df, c2)
     path = scores_path(dataset)
     _write(df, path, producer)
     return path

@@ -21,13 +21,21 @@ MIN_PRECISION = 0.987  # baseline micro precision on sample valid fold
 
 # ------------------------------------------------------------------ scoring
 
+SCORE_BATCH = 5_000_000  # feature rows per predict call (test has ~87M)
+
+
 def score(dataset: str, model: lgb.Booster | None = None) -> pl.DataFrame:
     if model is None:
         model = load_model()
-    feat = pl.read_parquet(C.features_path(dataset))
-    X = feat.select(FEATURE_COLS).to_numpy().astype(np.float32)
-    probs = model.predict(X).astype(np.float32)
-    scores = feat.select("s1_id", "id").with_columns(pl.Series("prob", probs))
+    feat = pl.scan_parquet(C.features_path(dataset))
+    n = feat.select(pl.len()).collect().item()
+    parts = []
+    for off in range(0, n, SCORE_BATCH):
+        b = feat.slice(off, SCORE_BATCH).collect()
+        probs = model.predict(b.select(FEATURE_COLS).to_numpy().astype(np.float32)).astype(np.float32)
+        parts.append(b.select("s1_id", "id").with_columns(pl.Series("prob", probs)))
+        del b
+    scores = pl.concat(parts)
     C.write_scores(scores, dataset, producer="predict.score")
     return scores
 

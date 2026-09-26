@@ -276,60 +276,76 @@ def featurized_s1_pct(dataset: str) -> int | None:
     return json.loads(p.read_text())["s1_pct"] if p.exists() else None
 
 
-def build_features(dataset: str, s1_pct: int | None = None) -> pl.DataFrame:
-    t0 = time.time()
+SHARD_S1 = 200_000  # S1 entities whose candidates + S2/S3 records are in memory at once
 
-    scan = pl.scan_parquet(C.candidates_path(dataset))
-    cands = scan.filter(in_subsample(s1_pct)).collect()
-    id_ctx = (scan.group_by("id").agg(
+
+def build_features(dataset: str, s1_pct: int | None = None):
+    """Features for C2 (optionally only `s1_pct`% of S1), written to C.features_path(dataset).
+
+    Streams: candidates and S2/S3 records are loaded per shard of SHARD_S1 S1 entities, each
+    S1_CHUNK chunk is written to a part file, and the parts are joined with the per-id context
+    and sunk into one Parquet file, so memory does not grow with the dataset (test C2 is ~87M
+    pairs). Returns the output path."""
+    import shutil
+
+    t0 = time.time()
+    scan = pl.scan_parquet(C.candidates_path(dataset)).filter(in_subsample(s1_pct))
+    s1_ids = scan.select("s1_id").unique().collect().sort("s1_id")
+    id_ctx = (pl.scan_parquet(C.candidates_path(dataset)).group_by("id").agg(
                   pl.len().cast(pl.Float32).alias("n_s1_for_id"),
                   (pl.col("blk_name_sim") >= NEAR_SAME_NAME).sum().cast(pl.Float32)
                     .alias("n_same_name_cands"))
-              .join(cands.select("id").unique().lazy(), on="id", how="semi")
               .collect(engine="streaming"))
-    print(f"  {cands.height:,} candidate pairs for {cands['s1_id'].n_unique():,} S1 "
-          f"(s1_pct={s1_pct})", flush=True)
+    print(f"  {s1_ids.height:,} S1 with candidates (s1_pct={s1_pct})", flush=True)
 
     n1 = _load_norm(dataset, 1)
-    nother = _load_norm_ids(dataset, cands.select("id").unique())
-    name_vec, addr_vec = _get_tfidf_vecs(dataset, n1, nother)
+    name_vec, addr_vec = _get_tfidf_vecs(
+        dataset, n1, None if TFIDF_NAME_PATH.exists() and TFIDF_ADDR_PATH.exists()
+        else _load_norm_ids(dataset, scan.select("id").unique().collect()))
 
     # name frequency among this dataset's S1: common names are weak evidence
     name_freq = n1.group_by("name_core").agg(pl.len().alias("_nfreq"))
-    left  = _side(n1.join(cands.select(pl.col("s1_id").alias("entity_id")).unique(),
-                          on="entity_id", how="semi"), "s1_id", "1", name_freq)
-    right = _side(nother, "id", "2", name_freq)
-    del n1, nother
 
-    cands = cands.with_columns(
-        ((pl.col("s1_id").rank("dense") - 1) // S1_CHUNK).cast(pl.UInt32).alias("_chunk"))
-    n_chunks = cands["_chunk"].max() + 1
-
-    parts = []
-    for k in range(n_chunks):
-        pairs = (cands.filter(pl.col("_chunk") == k).drop("_chunk")
-                 .join(left, on="s1_id").join(right, on="id"))
-        parts.append(_chunk_features(pairs, name_vec, addr_vec))
-        del pairs
-        print(f"  chunk {k + 1}/{n_chunks}  ({time.time() - t0:.0f}s)", flush=True)
-    del cands, left, right
-
-    feat = pl.concat(parts)
-    del parts
-    feat = (feat.join(id_ctx, on="id", how="left")
-                .with_columns(pl.col(ID_SCOPED).fill_null(0))
-                .select(["s1_id", "id"] + FEATURE_COLS))
+    parts_dir = C.features_path(dataset).with_suffix(".parts")
+    shutil.rmtree(parts_dir, ignore_errors=True)
+    parts_dir.mkdir(parents=True)
+    n_rows, part = 0, 0
+    n_shards = (s1_ids.height + SHARD_S1 - 1) // SHARD_S1
+    for sh in range(n_shards):
+        shard_ids = s1_ids.slice(sh * SHARD_S1, SHARD_S1)
+        cands = scan.join(shard_ids.lazy(), on="s1_id", how="semi").collect()
+        left = _side(n1.join(shard_ids.rename({"s1_id": "entity_id"}), on="entity_id", how="semi"),
+                     "s1_id", "1", name_freq)
+        right = _side(_load_norm_ids(dataset, cands.select("id").unique()), "id", "2", name_freq)
+        cands = cands.with_columns(
+            ((pl.col("s1_id").rank("dense") - 1) // S1_CHUNK).cast(pl.UInt32).alias("_chunk"))
+        for k in range(cands["_chunk"].max() + 1):
+            pairs = (cands.filter(pl.col("_chunk") == k).drop("_chunk")
+                     .join(left, on="s1_id").join(right, on="id"))
+            f = _chunk_features(pairs, name_vec, addr_vec)
+            f.write_parquet(parts_dir / f"part_{part:05d}.parquet")
+            n_rows += f.height
+            part += 1
+            del pairs, f
+        del cands, left, right
+        print(f"  shard {sh + 1}/{n_shards}: {n_rows:,} pairs ({time.time() - t0:.0f}s)", flush=True)
+    del n1
 
     path = C.features_path(dataset)
     path.parent.mkdir(parents=True, exist_ok=True)
-    feat.write_parquet(path, compression="zstd")
+    (pl.scan_parquet(parts_dir / "*.parquet")
+       .join(id_ctx.lazy(), on="id", how="left")
+       .with_columns(pl.col(ID_SCOPED).fill_null(0))
+       .select(["s1_id", "id"] + FEATURE_COLS)
+       .sink_parquet(path, compression="zstd"))
+    shutil.rmtree(parts_dir, ignore_errors=True)
     if s1_pct is None:
         subsample_path(dataset).unlink(missing_ok=True)
     else:
         subsample_path(dataset).write_text(json.dumps({"s1_pct": s1_pct}))
-    print(f"features {dataset}: {feat.height:,} pairs, {len(FEATURE_COLS)} features "
+    print(f"features {dataset}: {n_rows:,} pairs, {len(FEATURE_COLS)} features "
           f"in {time.time()-t0:.1f}s → {path}")
-    return feat
+    return path
 
 
 FEATURE_COLS = [
