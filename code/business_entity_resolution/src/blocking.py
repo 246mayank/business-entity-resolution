@@ -144,14 +144,22 @@ def block_country(s1: pl.DataFrame, pool: pl.DataFrame) -> pl.DataFrame:
     ).drop("_score", "_rank", "_rev")
 
 
+COLUMNS = ["entity_id", "country", "name_core", "name_nospace", "is_domain", "addr_clean", "addr_places"]
+
+
+def _load_country(dataset: str, sources, country: str) -> pl.DataFrame:
+    """Only the columns blocking needs, one country at a time (full train is 12.5M records)."""
+    return pl.concat([pl.scan_parquet(C.norm_path(dataset, s)).select(COLUMNS).filter(pl.col("country") == country)
+                      for s in sources]).collect()
+
+
 def build_candidates(dataset: str) -> pl.DataFrame:
-    s1_all = C.load_norm(dataset, 1)
-    pool_all = pl.concat([C.load_norm(dataset, 2), C.load_norm(dataset, 3)])
+    countries = (pl.scan_parquet(C.norm_path(dataset, 1)).select("country").unique().collect()["country"].sort().to_list())
     out = []
-    for country in s1_all["country"].unique().sort().to_list():
+    for country in countries:
         t = time.time()
-        s1 = s1_all.filter(pl.col("country") == country)
-        pool = pool_all.filter(pl.col("country") == country)
+        s1 = _load_country(dataset, (1,), country)
+        pool = _load_country(dataset, (2, 3), country)
         if pool.height == 0:
             continue
         p = block_country(s1, pool)
