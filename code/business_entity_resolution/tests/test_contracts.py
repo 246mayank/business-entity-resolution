@@ -52,11 +52,14 @@ def test_c4_enforces_one_owner_and_subset():
         C.check_c4(pl.DataFrame({"s1_id": ["S1-2"], "id": ["S3-1"]}), CANDS)
 
 
-def test_c3_must_cover_c2_exactly():
+def test_c3_must_cover_c2_of_scored_s1_exactly():
     scores = CANDS.select("s1_id", "id", pl.lit(0.3, pl.Float32).alias("prob"))
     C.check_c3(scores, CANDS)
+    C.check_c3(scores.filter(pl.col("s1_id") == "S1-1"), CANDS)      # S1 subset (--s1-pct) is fine
     with pytest.raises(C.ContractError):
-        C.check_c3(scores.head(2), CANDS)
+        C.check_c3(scores.head(1), CANDS)                              # S1-1 missing one of its pairs
+    with pytest.raises(C.ContractError):
+        C.check_c3(scores.with_columns(pl.lit("S3-9").alias("id")).head(2).unique("id"), CANDS)
 
 
 def test_stub_normalize_is_contract_valid():
