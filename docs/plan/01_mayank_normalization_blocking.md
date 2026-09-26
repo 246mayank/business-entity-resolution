@@ -28,7 +28,7 @@ Branch: **`mayank`**. Read first: [00_combined_plan.md](00_combined_plan.md) (co
 4. Tests: `tests/test_contracts.py` (validators reject a bad frame, accept the stub).
 5. PR, Yash approves, merge, both sync. **Tell Yash “stub ready”.**
 
-## A1 — EDA notebook `notebooks/A_01_text_eda.ipynb` (≈ half a day, time-box it)
+## A1 — EDA notebook `notebooks/A_01_text_eda.ipynb` ✅ done 2026-09-26 — findings in `docs/method/blocking.md`
 Answer with numbers on the sample, write conclusions into `docs/method/blocking.md`:
 - Script mix: % of names/addresses per Unicode script (Devanagari, Kannada, Tamil, Telugu, Bengali, Gujarati, Gurmukhi, Malayalam, Odia, Latin) per source. Which sources carry native script? (Example: S2 `राम मार्केटिंग प्राइवेट लिमिटेड`.)
 - Junk: most frequent leading/trailing non-alnum sequences (`--`, `<<`, …), domain-like names (`\.(com|in|net|org|fr)\b`), words like “DBA”, “the”.
@@ -38,6 +38,8 @@ Answer with numbers on the sample, write conclusions into `docs/method/blocking.
 - **Test France**: 200-row eyeball of test S1/S2/S3 France records — legal forms (SARL, SAS, SASU, EURL, SA, SCI, SNC), street words (rue, avenue, boulevard, bd, chemin, allée, place, bis/ter), postcode position. Note anything train didn’t prepare us for.
 
 ## A2 — `src/normalize.py` v1 → real C1
+> **Revised after A1 EDA** — see `docs/method/blocking.md` §2: postcodes are almost never present (5-digit numbers are house numbers); add DBA/domain/bracket/honorific handling, a learned Indic token dictionary, and extra columns `name_nospace`, `addr_street`, `addr_city`, `addr_region`, `is_domain`.
+
 Public API: `normalize_frame(df: pl.DataFrame) -> pl.DataFrame` (C1 columns), `normalize_all(splits=("train","test"))` writing `cache/norm/…`, CLI `python -m src.normalize`.
 Pipeline per field (vectorised with Polars string ops wherever possible; Python UDFs only for transliteration, and only on rows with non-Latin chars):
 1. Unicode NFKC; detect non-Latin → `is_native_script`.
@@ -52,6 +54,8 @@ Pipeline per field (vectorised with Polars string ops wherever possible; Python 
 Tests: table-driven cases from real examples (the ones in CLAUDE.md), plus property tests (idempotent, never raises on empty strings, preserves row count & ids). Performance target: full train+test (~23M rows) in < 15 min locally.
 
 ## A3 — `src/blocking.py` v1 → real C2
+> **Revised after A1 EDA**: drop the postcode key; blockers = name char-TF-IDF on `name_nospace`, address TF-IDF, name+address TF-IDF, `(house_no, street token)` / exact-name keys, reverse top-3. See `docs/method/blocking.md` §2.
+
 Public API: `build_candidates(dataset: str) -> None` writes C2 and returns stats; CLI `python -m src.blocking --dataset sample_5pct`.
 Work **per country**, S1 in chunks (e.g. 50k), S2 and S3 treated as one target pool but with a per-source top-K so neither source crowds out the other.
 Blockers (union; each sets its bit in `blk_flags`):
