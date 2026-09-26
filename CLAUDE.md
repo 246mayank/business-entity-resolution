@@ -73,3 +73,4 @@ Macro F0.5 per S1 entity, averaged over **all** S1 entities (singletons included
 ## Team plan
 - Work plan, contracts and file ownership: `docs/plan/00_combined_plan.md`. Track A (Mayank, branch `mayank`): `docs/plan/01_mayank_normalization_blocking.md`. Track B (Yash, branch `yash`): `docs/plan/02_yash_matching_model.md`.
 - Only edit files owned by the current branch's owner (ownership table in the combined plan). Personal notes go in `CLAUDE.local.md` (gitignored).
+- Stages talk only through `src/contracts.py` (C1 norm records, C2 candidates, C3 scores, C4 final pairs): write with `contracts.write_*` (validates), read with `contracts.load_*`; get dataset inputs via `contracts.load_records / load_s1_folds / load_ground_truth`. `contracts.producer_of(path)` says whether a cache file came from the stub or the real stage.
