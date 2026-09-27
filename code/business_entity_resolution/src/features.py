@@ -5,6 +5,7 @@ Run:
 """
 import argparse
 import json
+import re
 import time
 
 import joblib
@@ -190,7 +191,7 @@ def _number_features(pairs: pl.DataFrame) -> pl.DataFrame:
              .drop("_r"))
 
 
-def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
+def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec, vocab: frozenset[str] = frozenset()) -> pl.DataFrame:
     nc1, nc2 = pairs["nc1"].fill_null("").to_list(), pairs["nc2"].fill_null("").to_list()
     ac1, ac2 = pairs["ac1"].fill_null("").to_list(), pairs["ac2"].fill_null("").to_list()
 
@@ -217,6 +218,7 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
     hi, lo = np.maximum(len1, len2), np.minimum(len1, len2)
     num["name_len_ratio"] = np.divide(lo, hi, out=np.ones_like(hi), where=hi > 0)
     num.update(_first_token_features(nc1, nc2))
+    num.update(_name_noise_features(nc1, nc2, vocab))
     del nc1, nc2
 
     both_addr = ((pairs["ac1"].fill_null("") != "") & (pairs["ac2"].fill_null("") != "")).to_numpy()
@@ -249,6 +251,9 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
             place_jaccard.cast(pl.Float32).alias("place_jaccard"),
             pl.col("_nfreq1").fill_null(0).log1p().cast(pl.Float32).alias("name_freq_s1"),
             pl.col("_nfreq2").fill_null(0).log1p().cast(pl.Float32).alias("name_freq_id"),
+            (pl.col("hn2").str.extract(r"(\d+)").str.slice(0, 9).cast(pl.Int64, strict=False)
+             - pl.col("hn1").str.extract(r"(\d+)").str.slice(0, 9).cast(pl.Int64, strict=False))
+                .clip(-20, 20).fill_null(0).cast(pl.Float32).alias("hn_delta"),
             pl.col("blk_rank").cast(pl.Float32),
             pl.col("blk_rev_rank").cast(pl.Float32),
         ]
@@ -256,6 +261,65 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
     out = _rel_to_best_other(out, "name_tsr", "name_tsr_rel")
     out = _rel_to_best_other(out, "addr_cos", "addr_cos_rel")
     return out.select(["s1_id", "id"] + [c for c in FEATURE_COLS if c not in ID_SCOPED])
+
+
+# Generated replacement names are 2-4 syllables from a fixed set ("zetazeph", "lyraxylo").
+_SYL = sorted(set(("dova halo kelo vera gild lyra pyra kor drex xylo zeph ecto vantage avi cira vio delta "
+                   "mira zeta lum calo jax sol tavo riza wex onyx nyla belo nex aria evo umbra arc flux faye "
+                   "orbi syn yuma iri novi brix veo").split()), key=len, reverse=True)
+_SYN_RE = re.compile("(?:" + "|".join(_SYL) + "){2,}x?")
+_TOK_RE = re.compile(r"[a-z]+")
+_LEET = str.maketrans("01358", "olesa")
+# real words that true-match noise also adds, and filler words: never "novel"
+_NOVEL_STOP = frozenset((
+    "federation society council board district trust foundation commission association technologies "
+    "automotive systems one sys labs com www center centre services service partners the sri shri smt "
+    "private limited company corporation incorporated").split())
+S1_VOCAB_PATH = config.MODELS_DIR / "s1_name_vocab.json"
+VOCAB_MIN_NAMES = 5
+
+
+def _s1_vocab(dataset: str) -> frozenset[str]:
+    """Name tokens (>= 4 letters) found in >= VOCAB_MIN_NAMES distinct train S1 names; fitted once and persisted."""
+    if S1_VOCAB_PATH.exists():
+        return frozenset(json.loads(S1_VOCAB_PATH.read_text()))
+    fit_ds = "train" if C.norm_path("train", 1).exists() else dataset
+    names = pl.read_parquet(C.norm_path(fit_ds, 1), columns=["name_core"])["name_core"].fill_null("").unique()
+    tok = (pl.DataFrame({"n": names}).with_columns(pl.col("n").str.extract_all(r"[a-z]+").list.unique().alias("t"))
+             .explode("t").drop_nulls("t").filter(pl.col("t").str.len_chars() >= 4)
+             .group_by("t").len().filter(pl.col("len") >= VOCAB_MIN_NAMES)["t"].to_list())
+    config.MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    S1_VOCAB_PATH.write_text(json.dumps(sorted(tok)))
+    return frozenset(tok)
+
+
+def _name_noise_features(nc1: list[str], nc2: list[str], vocab: frozenset[str]) -> dict[str, np.ndarray]:
+    """rec_synth_share: share of record-name tokens that are generated syllable words (true matches
+    whose name was replaced). novel_real_words: record-name words
+    that are real business words (common in S1 names) with no counterpart in this S1's name; distractor
+    copies insert real words (Forex -> Life, + Ventures), while true-match noise only misspells."""
+    n = len(nc1)
+    share = np.zeros(n, dtype=np.float32)
+    novel = np.zeros(n, dtype=np.float32)
+    for i, (a, b) in enumerate(zip(nc1, nc2)):
+        ta, tb = _TOK_RE.findall(a), _TOK_RE.findall(b)
+        if tb:
+            share[i] = sum(1 for t in tb if _SYN_RE.fullmatch(t)) / len(tb)
+        if not ta:
+            continue
+        joined = "".join(ta)
+        k = 0
+        for t in set(tb):
+            if t == "public" and "public" not in ta:
+                k += 1
+                continue
+            if len(t) < 4 or t in _NOVEL_STOP or t not in vocab or t in joined:
+                continue
+            lt = t.translate(_LEET)
+            if max(fuzz.ratio(lt, s) for s in ta) < 60:
+                k += 1
+        novel[i] = k
+    return {"rec_synth_share": share, "novel_real_words": novel}
 
 
 def _first_token_features(nc1: list[str], nc2: list[str]) -> dict[str, np.ndarray]:
@@ -346,6 +410,7 @@ def build_features(dataset: str, s1_pct: int | None = None):
     name_vec, addr_vec = _get_tfidf_vecs(
         dataset, n1, None if TFIDF_NAME_PATH.exists() and TFIDF_ADDR_PATH.exists()
         else _load_norm_ids(dataset, scan.select("id").unique().collect()))
+    vocab = _s1_vocab(dataset)
 
     # name frequency among this dataset's S1: common names are weak evidence
     name_freq = n1.group_by("name_core").agg(pl.len().alias("_nfreq"))
@@ -366,7 +431,7 @@ def build_features(dataset: str, s1_pct: int | None = None):
         for k in range(cands["_chunk"].max() + 1):
             pairs = (cands.filter(pl.col("_chunk") == k).drop("_chunk")
                      .join(left, on="s1_id").join(right, on="id"))
-            f = _chunk_features(pairs, name_vec, addr_vec)
+            f = _chunk_features(pairs, name_vec, addr_vec, vocab)
             f.write_parquet(parts_dir / f"part_{part:05d}.parquet")
             n_rows += f.height
             part += 1
@@ -405,6 +470,7 @@ FEATURE_COLS = [
     "name_freq_s1", "name_freq_id", "n_same_name_cands",
     "num_both", "num_jaccard", "num_min_edit", "num_min_loggap", "hn_edit", "hn_loggap",
     "first_tok_eq", "first_tok_jw", "rest_tsr", "first_swap", "name_tsr_rel", "addr_cos_rel",
+    "rec_synth_share", "novel_real_words", "hn_delta",
 ]
 
 
