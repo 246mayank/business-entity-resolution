@@ -1,6 +1,6 @@
 # ML Challenge 2026: Business Entity Resolution Solution
 
-**Team Name:** [Team name — to fill]
+**Team Name:** BTards
 **Team Members:** Mayank Singh (text normalisation, candidate generation, orchestration), Yash Anand (features, matching model, decision)
 **Submission Date:** 27 September 2026
 
@@ -18,8 +18,8 @@ Every learned component is fitted on train only. Nothing depends on the country 
 
 Headline numbers:
 - full-train validation macro F0.5 **0.9415** (first model)
-- public leaderboard **0.935** (first submission)
-- final model: **[TBD — final run]**
+- public leaderboard **0.935** (first submission) → **0.9507** (final model)
+- final model (pruned candidates + address-number features): full-train validation macro F0.5 **0.9579**
 
 ---
 
@@ -172,7 +172,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Matcher macro F0.5 (same model) | 0.9431 | **0.9430** |
 
 - **Test:** 86.8M → **10.7M pairs, 6.18 candidates per S1**. 2,524 S1 have no candidate, so they get empty lists.
-- **Candidate pairs in the submitted file:** **[TBD — final run]**.
+- **Candidate pairs in the submitted file:** **10,706,441** for 1,732,544 test S1 (6.18 per S1).
 
 **How true matches are protected**
 - Six complementary retrieval routes, each contributing unique true pairs (table above).
@@ -216,8 +216,8 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 **Model type:** LightGBM binary classifier (MIT licence; tree ensemble, far below 8B parameters).
 - Parameters: `num_leaves` 127, `learning_rate` 0.05, feature/bagging fraction 0.8, L1 0.1 / L2 1.0, `scale_pos_weight = neg/pos`, up to 6000 rounds (the first full-train model hit the earlier 3000 cap while still improving).
 - Early stopping (80 rounds) on a held-out 10% of train-fold S1.
-- Trained on full train with features for 20% of S1: 15.1M pairs, 1.01M positives.
-- **[TBD — final run: rounds / learning rate, training on pruned pairs.]**
+- First model: trained on the wide candidates of 20% of train S1 (15.1M pairs, 1.01M positives).
+- Final model: trained on the **pruned** candidates of 20% of train S1 (1.57M pairs, 64% positives, the hard cases near the boundary); threshold 0.60 (no precision guard). Per-record competitor counts (`n_s1_for_id`, `n_same_name_cands`) are counted over the unpruned candidates, which cover every S1 on both train and test (counting over the pruned 20%-S1 train file would show test ~5x more competitors than training — a skew found and fixed before the final submission). Trained in 2.5 min on an 8-vCPU AWS instance.
 
 **Decision.**
 - Score → keep pairs with `p ≥ t` → **one-owner assignment** (each S2/S3 record goes only to its highest-probability S1).
@@ -251,7 +251,12 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Micro precision / recall | 0.9889 / 0.8735 |
 | Singleton / non-singleton F0.5 | 0.9559 / 0.9406 |
 | Public leaderboard, first submission | **0.935** |
-| Final model — valid F0.5 / leaderboard | **[TBD]** |
+| **Final model — valid macro F0.5** | **0.9580** (US 0.9611, India 0.9533) |
+| Final model — micro precision / recall | 0.9902 / 0.9109 |
+| Final model — singleton / non-singleton F0.5 | 0.9651 / 0.9576 |
+| Final model — S1 with ≥ 1 false match (valid) | 2,682 (first model 2,935) |
+| Final model before the count-skew fix — public leaderboard | 0.9507 |
+| **Final model (skew fixed) — public leaderboard** | **[pending upload]** |
 
 Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as train. Empty lists: France 6.6%, India 7.2%, US 6.5%. The unlabelled country behaves like the labelled ones.
 
