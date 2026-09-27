@@ -63,3 +63,15 @@ def test_apply_is_repeatable_from_wide_files(tiny_cache):
     P.apply("test", _Model(), k=4, pmin=0.0)        # re-prunes from the wide files, not the pruned ones
     assert pl.read_parquet(C.features_path("test")).height == 12
     assert pl.read_parquet(P.wide_path(C.features_path("test"))).height == tiny_cache.height
+
+
+def test_reset_restores_wide_candidates_without_key_pairs(tiny_cache):
+    P.apply("test", _Model(), k=2, pmin=0.2)
+    wide = pl.read_parquet(P.wide_path(C.candidates_path("test")))
+    key = wide.head(1).with_columns(pl.lit("S2-999").alias("id"), pl.lit(C.FLAG_KEY, pl.UInt8).alias("blk_flags"))
+    pl.concat([wide, key]).write_parquet(P.wide_path(C.candidates_path("test")))
+    P.reset("test")
+    restored = pl.read_parquet(C.candidates_path("test"))
+    assert restored.sort("s1_id", "id").equals(wide.sort("s1_id", "id"))
+    assert not P.wide_path(C.candidates_path("test")).exists()
+    assert not C.features_path("test").exists() and not P.wide_path(C.features_path("test")).exists()

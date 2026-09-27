@@ -60,6 +60,21 @@ def _sources(dataset: str) -> tuple[Path, Path]:
     return out[0], out[1]
 
 
+def reset(dataset: str) -> None:
+    """Undo pruning: restore C2 to the retrieval output (wide, without key-route pairs) and drop the
+    feature tables, so features can be rebuilt for a larger S1 share and pruned with the SAME pruner
+    (the submitted model: pruner fitted on 20% of train S1, matcher trained on 40%)."""
+    cand, wide = C.candidates_path(dataset), wide_path(C.candidates_path(dataset))
+    if wide.exists():
+        tmp = cand.with_name(cand.stem + ".tmp.parquet")
+        pl.scan_parquet(wide).filter((pl.col("blk_flags") & C.FLAG_KEY) == 0).sink_parquet(tmp, compression="zstd")
+        os.replace(tmp, cand)
+        wide.unlink()
+    for path in (C.features_path(dataset), wide_path(C.features_path(dataset))):
+        path.unlink(missing_ok=True)
+    print(f"prune reset {dataset}: {cand} restored to the retrieval candidates; feature tables removed")
+
+
 def fit(dataset: str = "train") -> lgb.Booster:
     """Train the pruner on the train fold (minus the matcher's early-stopping S1s)."""
     t0 = time.time()
@@ -143,7 +158,11 @@ if __name__ == "__main__":
     ap.add_argument("--fit", action="store_true", help="fit the pruner on this dataset first (not for test)")
     ap.add_argument("--k", type=int, default=K)
     ap.add_argument("--pmin", type=float, default=PMIN)
+    ap.add_argument("--reset", action="store_true", help="undo pruning (restore the wide candidates) and exit")
     args = ap.parse_args()
+    if args.reset:
+        reset(args.dataset)
+        raise SystemExit(0)
     if args.fit and args.dataset == "test":
         ap.error("the pruner cannot be fitted on test (no labels)")
     m = fit(args.dataset) if args.fit else None
