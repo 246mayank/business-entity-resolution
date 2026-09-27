@@ -32,3 +32,4 @@ Thumbs.db
 .pytest_cache/
 CLAUDE.local.md
 logs/
+output/dev/
