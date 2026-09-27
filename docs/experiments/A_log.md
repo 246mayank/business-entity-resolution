@@ -12,3 +12,4 @@ Valid fold = S1 entities with `fold == "valid"` (see `contracts.load_s1_folds`).
 | 2026-09-26 | blocking v1 | train 20k-S1 slices | full-density check | place-combo recall India 0.88 / US 0.89; global name/addr 0.54-0.66 |
 | 2026-09-26 | blocking v1 | train (full) | full-train run, valid fold | recall 0.945, 49.1 cands/S1, full-recall 0.850, oracle 0.979; 70.5 min (India 57, US 11) |
 | 2026-09-26 | blocking v1 | test | test C2 | 86.8M pairs, 52 min; cands/S1 France 54.0, India 49.6, US 49.2; S1 without candidates 504 of 1.73M |
+| 2026-09-27 | end-to-end | train (20% S1) -> test | first full run: features 47 min (train) / 3 h 4 min (test, streaming), train 25 min, test predict 52 min | full-train valid F0.5 0.9415 (precision 0.989, recall 0.874); test 5.37M matches, validator PASS |
