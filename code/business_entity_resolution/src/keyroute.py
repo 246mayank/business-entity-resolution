@@ -9,6 +9,7 @@ can fall outside the top K. On the full-train valid fold, 16.6k true pairs are m
   addr   same addr_clean token set
   hn     same house number, and a shared address place
   name_only  same name_core token set, for records with an empty address
+  street same house number + a street word (catches misspelt cities)
 
 Key groups larger than the caps are skipped (common numbers in big cities). The pairs not
 already in the wide candidates are ranked per S1 by name + address token Jaccard; the top
@@ -29,9 +30,9 @@ from .prune import wide_path
 
 K_KEY = 3
 SC_MIN = 0.8
-CAPS = {"name": 500, "addr": 200, "hn": 300, "name_only": 200}
+CAPS = {"name": 500, "addr": 200, "hn": 300, "name_only": 200, "street": 200}
 N_CHUNKS = 8
-PRODUCER = "keyroute v1"
+PRODUCER = "keyroute v2"
 COLUMNS = ["entity_id", "country", "name_core", "addr_clean", "house_no", "addr_places"]
 
 
@@ -52,6 +53,13 @@ def _keys(df: pl.DataFrame, idc: str) -> dict[str, pl.DataFrame]:
                  .select(idc, "country", "k", "place").unique()),
         "addr": df.filter(pl.col("addr_clean") != "").select(idc, "country", pl.col("at").list.join(" ").alias("k")),
         "hn": places.filter(pl.col("house_no") != "").select(idc, "country", "house_no", "place").unique(),
+        # house number + a street word (alphabetic, >= 4 chars, not a place token): survives a misspelt city
+        "street": (df.filter(pl.col("house_no") != "").select(idc, "country", "house_no", pl.col("at").alias("w"))
+                   .explode("w", empty_as_null=True).drop_nulls("w")
+                   .filter((pl.col("w").str.len_chars() >= 4) & ~pl.col("w").str.contains(r"\d"))
+                   .join(df.select(idc, pl.col("addr_places").list.join(" ").str.split(" ").alias("w"))
+                           .explode("w", empty_as_null=True).drop_nulls("w"), on=[idc, "w"], how="anti")
+                   .unique()),
         # records without an address: name alone (S1 side keeps every S1 with a name)
         "name_only": (df.filter((pl.col("name_core") != "") & ((pl.col("addr_clean") == "") | (idc == "s1_id")))
                       .select(idc, "country", pl.col("nt").list.join(" ").alias("k"))),
@@ -59,7 +67,7 @@ def _keys(df: pl.DataFrame, idc: str) -> dict[str, pl.DataFrame]:
 
 
 ON = {"name": ["country", "k", "place"], "addr": ["country", "k"], "hn": ["country", "house_no", "place"],
-      "name_only": ["country", "k"]}
+      "name_only": ["country", "k"], "street": ["country", "house_no", "w"]}
 
 
 def _jac(x: str, y: str) -> pl.Expr:
