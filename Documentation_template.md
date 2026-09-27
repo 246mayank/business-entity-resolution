@@ -21,6 +21,7 @@ Headline numbers:
 - public leaderboard **0.935** (first submission) → **0.9507** (final model)
 - final model (pruned candidates + address-number features): full-train validation macro F0.5 **0.9579**
 - final model + exact-key routes: full-train validation macro F0.5 **0.9635**, public leaderboard **0.9563**
+- + first-token and relative-to-best features (46): validation **0.9669**, public leaderboard **0.9598**
 
 ---
 
