@@ -86,15 +86,16 @@ unconstrained 0.96 and cost 0.0011, so it is off by default (`--min-precision` t
 
 ## 5. Validation
 
-| | Dev sample (5% S1) | Full train (20% S1) |
-|---|---|---|
-| macro F0.5 | 0.9851 | 0.9415 (first model) |
-| micro precision / recall | 0.994 / 0.969 | 0.989 / 0.874 |
-| distractors per S1 | ~12× fewer | as in test |
+| | Dev sample (5% S1) | Full train, first model | Full train, final model |
+|---|---|---|---|
+| macro F0.5 | 0.9851 | 0.9415 | **0.9580** |
+| micro precision / recall | 0.994 / 0.969 | 0.989 / 0.874 | 0.990 / 0.911 |
+| public leaderboard | — | 0.935 | **0.950** |
+| distractors per S1 | ~12× fewer | as in test | as in test |
 
 The sample over-states every score: each S1 competes with far fewer look-alike records. The full-train
-valid fold predicted the first leaderboard score within 0.007 (0.9415 vs 0.935). Use the sample
-for fast relative comparisons only.
+valid fold predicted the leaderboard within 0.007–0.008 for both models. Use the sample for fast
+relative comparisons only, and check test-side prediction volume before uploading (§6).
 
 **Unseen country (France proxy).** Trained on one country, scored on the other (dev sample),
 threshold tuned on the training country:
@@ -114,6 +115,18 @@ The drop is mostly recall; a single global threshold transfers.
 | `learning_rate` 0.1 | 0.9846 vs 0.9849 | kept 0.05 |
 | no `scale_pos_weight` | 0.9845–0.9847; best threshold moves to ~0.71 | kept weighting |
 | more rounds on the sample (3000 cap vs 1000) | same F0.5, false-match entities 724 → 558 | kept, and raised to 6000 for full train |
+| **Peer features** (9): agreement with the S1's other candidates, within-S1 rank, same-name-different-number count, DBA alias | full-train valid 0.9582 → 0.9612, false-match entities −24%; **public leaderboard 0.92 vs 0.950** | **rejected** (see below) |
+
+**Why the peer features failed on test.** They targeted the dominant false positive (a sister branch one
+number away, attached to an S1 that already has its true matches) and separated classes well on train.
+But test has 5.8 S2/S3 records per S1 against 4.7 in train, and more pruned candidates per S1 (6.2 vs
+5.1). The raw-count features (`peer_n_agree`, `s1_same_name_diff_num`) therefore took values beyond the
+training range, and test predictions grew 7.6% (train +0.6%), almost all false merges.
+
+The valid fold could not show this: it is drawn from the train distribution. The check that would have
+caught it is cheap and should precede any upload: **compare predictions per S1 on test with train.**
+Features that count other candidates must be shares or ranks, not raw counts, when candidate density can
+differ between splits.
 
 ## 7. Remaining errors
 
