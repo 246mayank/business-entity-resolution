@@ -80,7 +80,7 @@ EDA was done on a deterministic 5% dev sample plus the full data (`notebooks/A_0
 1. **Learned, leakage-free normalisation dictionaries** (Indic tokens and a per-country place map) mined only from train GT pairs.
 2. **Place-conditioned sparse retrieval.** The combined name+address search runs inside each shared address component (city, district or state), which separates generic names ("… Private Limited") that global search cannot.
 3. **Two-stage candidate generation.** Retrieval gives ~50 candidates; a 17-feature learned pruner cuts that to ~5 per S1. The matcher only ever scores the pruned set, which is what `candidate_pairs.tsv` contains.
-4. **One-owner assignment and a decision rule tuned directly on macro F0.5**, including singletons, with a precision guard.
+4. **One-owner assignment and a decision rule tuned directly on macro F0.5**, including singletons.
 
 ```
 raw TSV ──► Parquet cache ──► normalize (C1) ──► blocking: 6 sparse TF-IDF searches (C2, ~50/S1)
@@ -191,7 +191,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 - **Name**
   - rapidfuzz token-set, token-sort, partial and plain ratio on `name_core`
   - ratio and partial ratio on the space-less name (domain-squashed names)
-  - char 2–3-gram TF-IDF cosine (vectoriser fitted once on train and persisted)
+  - char 2–3-gram TF-IDF cosine (`char_wb`, 50k vocabulary; the vectoriser is fitted once on a random 200k-text subsample of train and persisted, so train and test share one vocabulary)
   - length ratio
   - name frequency of both sides among the dataset's S1 (common names are weak evidence)
   - legal-form agreement: 3-state (equal / missing / conflict)
@@ -206,24 +206,38 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
   - blocking cosines, rank and reverse rank
   - the five blocker flag bits
   - `n_cands` per S1
-  - `n_s1_for_id` (S1s competing for the same record, computed over the full candidate set)
-  - number of near-identical-name candidates
-  - rank gap to the best candidate
+  - `n_s1_for_id` (S1s competing for the same record, counted over the unpruned candidate set, which covers every S1 on both train and test; counting over the pruned train set of a 20% S1 subsample would show test ~5× more competitors than training)
+  - number of the record's candidates with a near-identical name (blocking name cosine ≥ 0.9)
+  - gap between this pair's blocking name similarity and the S1's best one
 - **Source**
   - `is_s3`; native-script flag of the S2/S3 record
 - **Country is never a feature**, so France is not out-of-vocabulary.
 
 **Model type:** LightGBM binary classifier (MIT licence; tree ensemble, far below 8B parameters).
-- Parameters: `num_leaves` 127, `learning_rate` 0.05, feature/bagging fraction 0.8, L1 0.1 / L2 1.0, `scale_pos_weight = neg/pos`, up to 3000 rounds.
-- Early stopping on a held-out 10% of train-fold S1.
+- Parameters: `num_leaves` 127, `learning_rate` 0.05, feature/bagging fraction 0.8, L1 0.1 / L2 1.0, `scale_pos_weight = neg/pos`, up to 6000 rounds (the first full-train model hit the earlier 3000 cap while still improving).
+- Early stopping (80 rounds) on a held-out 10% of train-fold S1.
 - Trained on full train with features for 20% of S1: 15.1M pairs, 1.01M positives.
 - **[TBD — final run: rounds / learning rate, training on pruned pairs.]**
 
 **Decision.**
 - Score → keep pairs with `p ≥ t` → **one-owner assignment** (each S2/S3 record goes only to its highest-probability S1).
-- `t` is grid-searched on the valid fold to maximise **macro F0.5 including singletons**, subject to micro precision ≥ 0.987.
-- The chosen `t` = 0.97; the unguarded optimum was 0.96, a difference of 0.0011.
+- `t` is grid-searched on the valid fold to maximise **macro F0.5 including singletons**: steps of 0.01 up to 0.90, then 0.001 up to 0.999, because the optimum sits at 0.95–0.97.
+- The first model used a precision floor (micro precision ≥ 0.987). It chose `t` = 0.97 where the unconstrained optimum was 0.96, costing 0.0011 F0.5, so the floor was removed. It remains available as `--min-precision`.
 - The threshold and rule are persisted in `models/decision.json`. The pipeline refuses to apply a decision tuned on a different dataset than the model.
+
+**Generalisation to an unseen country (France proxy).** On the dev sample, a model trained on one country only was scored on the other, with the threshold tuned on the training country:
+
+| Held-out country | Seen in training | Never seen | Drop |
+|---|---|---|---|
+| India (trained on US) | 0.9824 | 0.9707 | −0.012 |
+| US (trained on India) | 0.9864 | 0.9803 | −0.006 |
+
+- The loss is mostly recall; precision stays ≥ 0.984, so the model becomes cautious rather than merging wrongly.
+- The threshold tuned on the training country is within 0.0002 F0.5 of the best threshold for the unseen one, so a single global threshold transfers to France.
+
+**Tried and not kept** (dev sample, same valid fold):
+- A second-stage re-ranker on out-of-fold stage-1 probabilities plus competition features (rank and margin within the record and within the S1): 0.9850 vs 0.9850, with more wrong merges. The stage-1 context features already carry this signal.
+- `learning_rate` 0.1 and/or no `scale_pos_weight`: 0.9845–0.9847 vs 0.9849 for the baseline, all within noise.
 
 ---
 
