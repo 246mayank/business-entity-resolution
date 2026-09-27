@@ -20,6 +20,7 @@ Headline numbers:
 - full-train validation macro F0.5 **0.9415** (first model)
 - public leaderboard **0.935** (first submission) → **0.9507** (final model)
 - final model (pruned candidates + address-number features): full-train validation macro F0.5 **0.9579**
+- final model + exact-key routes: full-train validation macro F0.5 **0.9635**, public leaderboard **0.9563**
 
 ---
 
@@ -173,6 +174,28 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 
 - **Test:** 86.8M → **10.7M pairs, 6.18 candidates per S1**. 2,524 S1 have no candidate, so they get empty lists.
 - **Candidate pairs in the submitted file:** **10,706,441** for 1,732,544 test S1 (6.18 per S1).
+
+### 3.4 Exact-key routes after pruning (`src/keyroute.py`)
+
+The absolute `MAX_DF` cap has a blind spot. A record whose tokens are all common, e.g. "behavioral health clinic, 132 highway 89 mayflower ar", is searched on its rare tokens only (here "mayflower"), so identical copies can fall outside the top K. On the full-train valid fold, 16.6k true pairs were missed by retrieval. A third of them share an exact key with their S1. Four join-based routes (no similarity search) recover them:
+
+| route | key |
+|---|---|
+| name | same name_core token set + a shared address place |
+| addr | same addr_clean token set |
+| hn | same house number + a shared address place |
+| name_only | same name_core token set, for records with an empty address |
+
+Key groups above a size cap are skipped. Pairs not already in the wide set are ranked per S1 by name + address token Jaccard, and the top 3 with a score ≥ 0.8 are added (flag bit 32). They are added to the wide set as well, so per-record competitor counts see them on train and test alike. The routes run after pruning and before the feature rebuild, so the matcher scores exactly this final set.
+
+| Full train, valid fold | Pruned | **Pruned + key routes (final)** |
+|---|---|---|
+| Candidates per S1 | 5.11 | **5.85** |
+| Pair recall | 0.9436 | **0.9610** |
+| Oracle macro F0.5 | 0.9791 | **0.9873** |
+| Matcher macro F0.5 (retrained) | 0.9580 | **0.9635** |
+
+The matcher accepts 83% of the true key-route pairs at 96.5% precision.
 
 **How true matches are protected**
 - Six complementary retrieval routes, each contributing unique true pairs (table above).
