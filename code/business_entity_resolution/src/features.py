@@ -11,6 +11,7 @@ import joblib
 import numpy as np
 import polars as pl
 from rapidfuzz import fuzz
+from rapidfuzz.distance import Levenshtein
 from rapidfuzz.process import cpdist
 from sklearn.feature_extraction.text import TfidfVectorizer
 
@@ -130,6 +131,65 @@ def _three_state(a: str, b: str) -> pl.Expr:
             .when(x == y).then(1).otherwise(-1).cast(pl.Int8))
 
 
+MAX_NUMS = 6  # numbers kept per address; bounds the cross product
+
+
+def _loggap(a: pl.Expr, b: pl.Expr) -> pl.Expr:
+    # slice keeps long digit runs (phone-like) inside Int64
+    x = a.str.slice(0, 9).cast(pl.Int64, strict=False)
+    y = b.str.slice(0, 9).cast(pl.Int64, strict=False)
+    return (x - y).abs().cast(pl.Float64).log1p()
+
+
+def _number_features(pairs: pl.DataFrame) -> pl.DataFrame:
+    """Agreement of the numbers in both addresses. -1 = no numbers / no unmatched pair.
+
+    num_min_edit / num_min_loggap compare the closest UNMATCHED numbers: one wrong digit
+    with a big gap is a typo (748 vs 548); a small gap is a neighbour (2579 vs 2582)."""
+    def nums(col):
+        return (pl.col(col).fill_null("").str.extract_all(r"\d+")
+                .list.unique(maintain_order=True).list.head(MAX_NUMS))
+
+    n = pairs.select(pl.int_range(pl.len(), dtype=pl.UInt32).alias("_r"),
+                     nums("ac1").alias("n1"), nums("ac2").alias("n2"))
+    both = (pl.col("n1").list.len() > 0) & (pl.col("n2").list.len() > 0)
+    inter = pl.col("n1").list.set_intersection(pl.col("n2")).list.len()
+    union = pl.col("n1").list.set_union(pl.col("n2")).list.len()
+    n = n.with_columns(both.cast(pl.Int8).alias("num_both"),
+                       pl.when(both).then(inter / union).otherwise(-1.0)
+                       .cast(pl.Float32).alias("num_jaccard"))
+
+    # closest pair among the numbers that did NOT match (shared ones would give 0)
+    x = (n.filter(pl.col("num_both") == 1)
+          .select("_r", pl.col("n1").list.set_difference(pl.col("n2")),
+                  pl.col("n2").list.set_difference(pl.col("n1")))
+          .filter((pl.col("n1").list.len() > 0) & (pl.col("n2").list.len() > 0))
+          .explode("n1").explode("n2"))
+    x = x.with_columns(
+        pl.Series("ed", cpdist(x["n1"].to_list(), x["n2"].to_list(),
+                               scorer=Levenshtein.distance, workers=-1, dtype=np.int32)),
+        _loggap(pl.col("n1"), pl.col("n2")).alias("gap"))
+    agg = x.group_by("_r").agg(pl.col("ed").min().cast(pl.Float32).alias("num_min_edit"),
+                               pl.col("gap").min().cast(pl.Float32).alias("num_min_loggap"))
+    del x
+
+    h1, h2 = pairs["hn1"].fill_null(""), pairs["hn2"].fill_null("")
+    hn_both = ((h1 != "") & (h2 != "")).to_numpy()
+    hn_ed = cpdist(h1.to_list(), h2.to_list(), scorer=Levenshtein.distance,
+                   workers=-1, dtype=np.int32).astype(np.float32)
+    hn_gap = pairs.select(_loggap(pl.col("hn1").str.extract(r"(\d+)"),
+                                  pl.col("hn2").str.extract(r"(\d+)")))[:, 0].to_numpy()
+
+    return (n.select("_r", "num_both", "num_jaccard")
+             .join(agg, on="_r", how="left")
+             .sort("_r")
+             .with_columns(pl.col("num_min_edit", "num_min_loggap").fill_null(-1.0),
+                           pl.Series("hn_edit", np.where(hn_both, hn_ed, -1.0).astype(np.float32)),
+                           pl.Series("hn_loggap", np.where(hn_both & ~np.isnan(hn_gap), hn_gap, -1.0)
+                                     .astype(np.float32)))
+             .drop("_r"))
+
+
 def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
     nc1, nc2 = pairs["nc1"].fill_null("").to_list(), pairs["nc2"].fill_null("").to_list()
     ac1, ac2 = pairs["ac1"].fill_null("").to_list(), pairs["ac2"].fill_null("").to_list()
@@ -173,6 +233,7 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
 
     out = pairs.with_columns(
         [pl.Series(k, v) for k, v in num.items()]
+        + _number_features(pairs).get_columns()
         + [((pl.col("blk_flags") & bit) > 0).cast(pl.Int8).alias(name) for name, bit in FLAG_BITS]
         + [
             _three_state("lf1", "lf2").alias("lf_match"),
@@ -228,9 +289,15 @@ def build_features(dataset: str, s1_pct: int | None = None):
     import shutil
 
     t0 = time.time()
-    scan = pl.scan_parquet(C.candidates_path(dataset)).filter(in_subsample(s1_pct))
+    cand_path = C.candidates_path(dataset)
+    scan = pl.scan_parquet(cand_path).filter(in_subsample(s1_pct))
     s1_ids = scan.select("s1_id").unique().collect().sort("s1_id")
-    id_ctx = (pl.scan_parquet(C.candidates_path(dataset)).group_by("id").agg(
+    # Count competitors over the unpruned candidates when they exist. After --s1-pct + prune, the
+    # pruned train file holds only the featurised S1s, while test holds all of them: counting there
+    # would give test ~5x the competitors the model saw in training.
+    wide = cand_path.with_name(cand_path.stem + ".wide.parquet")
+    ctx_src = wide if wide.exists() else cand_path
+    id_ctx = (pl.scan_parquet(ctx_src).group_by("id").agg(
                   pl.len().cast(pl.Float32).alias("n_s1_for_id"),
                   (pl.col("blk_name_sim") >= NEAR_SAME_NAME).sum().cast(pl.Float32)
                     .alias("n_same_name_cands"))
@@ -298,6 +365,7 @@ FEATURE_COLS = [
     "is_s3", "ns2", "place_jaccard",
     "blk_name_sim", "blk_addr_sim", "blk_rank", "blk_rev_rank",
     "name_freq_s1", "name_freq_id", "n_same_name_cands",
+    "num_both", "num_jaccard", "num_min_edit", "num_min_loggap", "hn_edit", "hn_loggap",
 ]
 
 

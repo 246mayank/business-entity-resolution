@@ -1,2 +1,3 @@
 # Track B (Yash): features + model + decision
 lightgbm==4.7.0
+joblib==1.6.0

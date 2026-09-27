@@ -33,7 +33,7 @@ LGB_PARAMS = {
     "seed": config.SEED,
     "verbose": -1,
 }
-N_ROUNDS = 3000
+N_ROUNDS = 6000  # full train hit 3000 still improving; early stopping ends it sooner when done
 EARLY_STOPPING = 80
 
 

@@ -16,7 +16,12 @@ from .features import FEATURE_COLS, featurized_s1_pct, in_subsample
 from .train import load_model
 
 DECISION_PATH = config.MODELS_DIR / "decision.json"
-MIN_PRECISION = 0.987  # baseline micro precision on sample valid fold
+# Off by default: on full train the 0.987 floor picked t=0.97 (F0.5 0.9415) over the unguarded
+# t=0.96 (0.9426). Pass --min-precision to enforce a floor.
+MIN_PRECISION = 0.0
+# fine steps at the top: the best threshold sits at 0.95-0.97
+THRESH_GRID = np.round(np.concatenate([np.arange(0.05, 0.90, 0.01),
+                                       np.arange(0.90, 0.9995, 0.001)]), 4)
 
 
 # ------------------------------------------------------------------ scoring
@@ -78,7 +83,7 @@ def tune_threshold(dataset: str, scores: pl.DataFrame,
 
     best_t, best_f = None, 0.0
     free_t, free_f = 0.5, 0.0
-    for t in np.arange(0.05, 0.99, 0.01):
+    for t in THRESH_GRID:
         pairs = decide_pairs(scores_eval, float(t))
         f = evaluate.macro_f05(pairs, gt_s1_eval, gt_pairs_eval)
         tp = pairs.join(gt_keys, on=["s1_id", "id"], how="semi").height
@@ -92,8 +97,8 @@ def tune_threshold(dataset: str, scores: pl.DataFrame,
         print(f"no threshold reaches precision >= {min_precision:.3f}; "
               f"falling back to unguarded best")
         best_t, best_f = free_t, free_f
-    print(f"unguarded best: t={free_t:.2f} F0.5={free_f:.4f}")
-    print(f"chosen:         t={best_t:.2f} F0.5={best_f:.4f} (precision >= {min_precision:.3f})")
+    print(f"unguarded best: t={free_t:.3f} F0.5={free_f:.4f}")
+    print(f"chosen:         t={best_t:.3f} F0.5={best_f:.4f} (precision >= {min_precision:.3f})")
     return best_t
 
 
@@ -123,7 +128,7 @@ def decide(dataset: str, threshold: float | None = None,
         valid_f05 = evaluate.macro_f05(pairs_v, gt_s1_v, gt_pairs_v)
 
         rep = evaluate.score_report(pairs_v, gt_s1_v, gt_pairs_v)
-        evaluate.print_report(rep, f"{dataset} valid fold (thresh={threshold:.2f})")
+        evaluate.print_report(rep, f"{dataset} valid fold (thresh={threshold:.3f})")
 
         decision = {
             "threshold": threshold,
