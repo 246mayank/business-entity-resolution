@@ -30,7 +30,7 @@ Run every command from this folder.
 | 6 | Test: features → prune → predict → write → validate | `python -m src.run_pipeline --dataset test --steps features prune predict write validate --model-from train` | see note | `output/matching_results.tsv`, `output/candidate_pairs.tsv` |
 
 \* On a 16 GB, 8-core laptop. Steps 5–6 first build the cheap pruning features on the wide candidate set
-(train 47 min for 20% of S1, test ~3 h), prune to ≤10 candidates per S1 (~5–6), then rebuild the full
+(train 47 min for 20% of S1, test ~3 h), prune to ≤10 candidates per S1 (~5–6), add the exact-key routes (~0.7 per S1), then rebuild the full
 features on the kept pairs only (minutes) — the matcher trains and predicts on exactly `candidate_pairs.tsv`.
 
 Step 6 ends with the organisers' validator (`utils/validate_submission.py`, run from `<root>`), which must print `PASS`.
@@ -43,8 +43,9 @@ Step 6 ends with the organisers' validator (`utils/validate_submission.py`, run 
 | Contracts | `src/contracts.py` | C1 normalised records, C2 candidates, C3 scores, C4 final pairs: schemas + validators (ids exist, same country, one owner per S2/S3 id) |
 | Normalise | `src/normalize.py` | accent folding, junk/DBA/domain/legal-form handling, learned Indic→English dictionary, learned per-country place map |
 | Retrieve | `src/blocking.py` | per-country sparse TF-IDF top-K: name, address, combined, place-conditioned, char 4-grams, reverse |
-| Features | `src/features.py` | 39 pair features, computed per S1 chunk and streamed to one Parquet |
+| Features | `src/features.py` | 46 pair features, computed per S1 chunk and streamed to one Parquet |
 | Prune | `src/prune.py` | learned pruner (17 cheap features) keeps ≤10 candidates/S1 with p ≥ 0.01 — the final candidate set; wide copies kept as `*.wide.parquet`; the pipeline then rebuilds the full features on the kept pairs |
+| Key routes | `src/keyroute.py` | exact-key joins (same name+place, same address, same house-no+place, same name for address-less records); up to 3 new pairs per S1 appended to the pruned (final) and wide candidates; run by the prune step before the feature rebuild |
 | Match | `src/train.py`, `src/predict.py` | LightGBM matcher; threshold tuned on the valid fold for macro F0.5; one-owner assignment; `models/decision.json` |
 | Evaluate | `src/evaluate.py` | competition metric (per-S1 F0.5, macro, singletons included), blocking recall and oracle ceiling |
 | Orchestrate | `src/run_pipeline.py` | steps `normalize block features prune train predict write validate`; dev outputs go to `output/dev/<dataset>/`, test outputs to `output/` |
