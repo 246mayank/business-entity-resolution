@@ -19,7 +19,7 @@ Every learned component is fitted on train only. Nothing depends on the country 
 Headline numbers:
 - full-train validation macro F0.5 **0.9415** (first model)
 - public leaderboard **0.935** (first submission)
-- final model: **[TBD — final run]**
+- final model (pruned candidates + address-number features): full-train validation macro F0.5 **0.9579**
 
 ---
 
@@ -172,7 +172,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Matcher macro F0.5 (same model) | 0.9431 | **0.9430** |
 
 - **Test:** 86.8M → **10.7M pairs, 6.18 candidates per S1**. 2,524 S1 have no candidate, so they get empty lists.
-- **Candidate pairs in the submitted file:** **[TBD — final run]**.
+- **Candidate pairs in the submitted file:** **10,706,441** for 1,732,544 test S1 (6.18 per S1).
 
 **How true matches are protected**
 - Six complementary retrieval routes, each contributing unique true pairs (table above).
@@ -216,8 +216,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 **Model type:** LightGBM binary classifier (MIT licence; tree ensemble, far below 8B parameters).
 - Parameters: `num_leaves` 127, `learning_rate` 0.05, feature/bagging fraction 0.8, L1 0.1 / L2 1.0, `scale_pos_weight = neg/pos`, up to 3000 rounds.
 - Early stopping on a held-out 10% of train-fold S1.
-- Trained on full train with features for 20% of S1: 15.1M pairs, 1.01M positives.
-- **[TBD — final run: rounds / learning rate, training on pruned pairs.]**
+- Final model: trained on the **pruned** candidates of 20% of train S1 (1.57M pairs, 64% positives, the hard cases near the boundary); early stopping picked 2,740 of max 6,000 rounds; threshold 0.62 (no precision guard). Trained in 2.5 min on an 8-vCPU AWS instance.
 
 **Decision.**
 - Score → keep pairs with `p ≥ t` → **one-owner assignment** (each S2/S3 record goes only to its highest-probability S1).
@@ -237,7 +236,11 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Micro precision / recall | 0.9889 / 0.8735 |
 | Singleton / non-singleton F0.5 | 0.9559 / 0.9406 |
 | Public leaderboard, first submission | **0.935** |
-| Final model — valid F0.5 / leaderboard | **[TBD]** |
+| **Final model — valid macro F0.5** | **0.9579** (US 0.9607, India 0.9538) |
+| Final model — micro precision / recall | 0.9906 / 0.9096 |
+| Final model — singleton / non-singleton F0.5 | 0.9681 / 0.9573 |
+| Final model — S1 with ≥ 1 false match (valid) | 2,570 (first model 2,935) |
+| Final model — public leaderboard | [pending upload] |
 
 Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as train. Empty lists: France 6.6%, India 7.2%, US 6.5%. The unlabelled country behaves like the labelled ones.
 
