@@ -1,6 +1,6 @@
 # ML Challenge 2026: Business Entity Resolution Solution
 
-**Team Name:** [Team name — to fill]
+**Team Name:** BTards
 **Team Members:** Mayank Singh (text normalisation, candidate generation, orchestration), Yash Anand (features, matching model, decision)
 **Submission Date:** 27 September 2026
 
