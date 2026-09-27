@@ -70,10 +70,10 @@ def step_features(dataset: str, s1_pct: int | None = None) -> None:
 
 
 def step_prune(dataset: str, model_from: str, s1_pct: int | None = None) -> None:
-    """Prune the wide candidates, then rebuild the full features on the kept pairs only, so the
-    matcher trains and predicts on exactly the final candidate set (candidate_pairs.tsv), with
-    per-S1 / per-id context features computed over that set."""
-    from . import features, prune
+    """Prune the wide candidates, add the exact-key routes (src/keyroute.py), then rebuild the
+    full features on the kept pairs only, so the matcher trains and predicts on exactly the final
+    candidate set (candidate_pairs.tsv), with per-S1 / per-id context features computed over that set."""
+    from . import features, keyroute, prune
     if dataset == "test":
         meta = json.loads(prune.META_PATH.read_text()) if prune.META_PATH.exists() else {}
         if meta.get("trained_on") != model_from:
@@ -82,6 +82,7 @@ def step_prune(dataset: str, model_from: str, s1_pct: int | None = None) -> None
         prune.apply(dataset)
     else:
         prune.apply(dataset, prune.fit(dataset))
+    keyroute.add(dataset)
     features.build_features(dataset, s1_pct)
 
 
