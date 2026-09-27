@@ -8,6 +8,8 @@ Steps (in order; --steps picks a subset):
   normalize  C1 via src.normalize          (subprocess: frees memory afterwards)
   block      C2 via src.blocking           (subprocess)
   features   pair features via src.features (--s1-pct: only that % of S1, for full train)
+  prune      learned candidate pruning via src.prune: fit on train/sample, keep <= K per S1;
+             rewrites C2 + features to the kept pairs (wide copies kept as *.wide.parquet)
   train      src.train.fit, then src.predict.decide tunes the threshold on the valid fold
              and writes models/decision.json (not for test)
   predict    score with models/matcher.txt, threshold from models/decision.json (or
@@ -19,6 +21,7 @@ Test outputs go to output/ (the submission); other datasets to output/dev/<datas
 so a dev run never overwrites the submission files. When features were built for a
 subset of S1 (--s1-pct), dev outputs and the F0.5 report cover that subset only.
 """
+import json
 import subprocess
 import sys
 import time
@@ -30,7 +33,7 @@ from . import contracts as C
 from . import io_utils as io
 from .evaluate import print_report, score_report
 
-STEPS = ("normalize", "block", "features", "train", "predict", "write", "validate")
+STEPS = ("normalize", "block", "features", "prune", "train", "predict", "write", "validate")
 PIPE_DIR = config.CACHE_DIR / "pipeline"
 
 
@@ -63,6 +66,18 @@ def step_features(dataset: str, s1_pct: int | None = None) -> None:
         raise SystemExit("--s1-pct is not allowed for test: every test S1 needs predictions")
     from . import features
     features.build_features(dataset, s1_pct)
+
+
+def step_prune(dataset: str, model_from: str) -> None:
+    from . import prune
+    if dataset == "test":
+        meta = json.loads(prune.META_PATH.read_text()) if prune.META_PATH.exists() else {}
+        if meta.get("trained_on") != model_from:
+            raise SystemExit(f"models/pruner.txt was fitted on {meta.get('trained_on')!r}, not {model_from!r}: "
+                             "run the prune step on --model-from first")
+        prune.apply(dataset)
+    else:
+        prune.apply(dataset, prune.fit(dataset))
 
 
 def step_train(dataset: str) -> None:
@@ -155,6 +170,8 @@ def run(dataset: str, steps=STEPS, model_from: str | None = None, threshold: flo
             step_predict(dataset, model_from, threshold)
         elif step == "features":
             step_features(dataset, s1_pct)
+        elif step == "prune":
+            step_prune(dataset, model_from)
         else:
             globals()[f"step_{step}"](dataset)
         print(f"   {step} done in {time.time() - t:.0f}s", flush=True)
