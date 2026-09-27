@@ -256,7 +256,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Final model — singleton / non-singleton F0.5 | 0.9651 / 0.9576 |
 | Final model — S1 with ≥ 1 false match (valid) | 2,682 (first model 2,935) |
 | Final model before the count-skew fix — public leaderboard | 0.9507 |
-| **Final model (skew fixed) — public leaderboard** | **[pending upload]** |
+| **Final model (skew fixed) — public leaderboard** | **0.950** |
 
 Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as train. Empty lists: France 6.6%, India 7.2%, US 6.5%. The unlabelled country behaves like the labelled ones.
 
@@ -318,6 +318,9 @@ python -m src.run_pipeline --dataset test --steps features prune predict write v
 **External data:** none. All dictionaries and maps are learned from the provided training data. No APIs, geocoders or pretrained language models are used.
 
 ### B. Additional Results
+
+**Tried and rejected — peer features (a lesson in distribution shift).** Nine features comparing each candidate with the S1's other top candidates (peer address/number agreement, number of agreeing peers, within-S1 address/number rank, same-name-different-number counts, DBA alias match) raised full-train valid F0.5 from 0.9580 to 0.9610 and cut valid entities with a false match by 13%, but scored **0.92 on the public leaderboard** (vs 0.950). Test has 5.8 S2/S3 records per S1 against 4.7 in train, so count-type peer features (`peer_n_agree`, `s1_same_name_diff_num`, `n_cands`) took values beyond the training range: test predictions grew by 7.6% (train: +0.6%), almost all false merges. The final submission therefore excludes them. Takeaway: features that count other candidates must be normalised (shares, ranks) rather than raw counts when the candidate density can differ between splits.
+
 - Blocking ablation and full-density evidence: `docs/method/blocking.md`.
 - Experiment logs: `docs/experiments/A_log.md`, `docs/experiments/B_log.md`.
 - Submission log: `docs/submissions_log.md`.
