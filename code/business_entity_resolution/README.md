@@ -28,13 +28,13 @@ Run every command from this folder.
 | 4 | Candidate retrieval, test | `python -m src.blocking --dataset test` | 52 min | `cache/candidates/test.parquet` |
 | 5 | Fit the pruner: wide features (20% of S1) → pruner → key routes → features → (first) matcher | `python -m src.run_pipeline --dataset train --steps features prune train --s1-pct 20` | ~1.5 h | `models/pruner.txt` |
 | 5b | Undo pruning (keep the pruner) | `python -m src.prune --dataset train --reset` | 1 min | wide `cache/candidates/train.parquet` |
-| 5c | Wide features for 40% of S1 | `python -m src.run_pipeline --dataset train --steps features --s1-pct 40` | ~1.5 h | `cache/features/train.parquet` |
+| 5c | Wide features for 60% of S1 | `python -m src.run_pipeline --dataset train --steps features --s1-pct 60` | ~2.5 h (or split by id range and run in parallel) | `cache/features/train.parquet` |
 | 5d | Prune with the step-5 pruner (no refit) | `python -m src.prune --dataset train` | 5 min | pruned C2 + features |
 | 5e | Exact-key routes | `python -m src.keyroute --dataset train` | 3 min | C2 += key pairs |
-| 5f | **Final matcher**: features → train → threshold → valid report | `python -m src.run_pipeline --dataset train --steps features train predict write --s1-pct 40` | ~40 min | `models/matcher.txt`, `models/decision.json` |
+| 5f | **Final matcher**: features → train → threshold → valid report | `python -m src.run_pipeline --dataset train --steps features train predict write --s1-pct 60` | ~40 min | `models/matcher.txt`, `models/decision.json` |
 | 6 | Test: features → prune → predict → write → validate | `python -m src.run_pipeline --dataset test --steps features prune predict write validate --model-from train` | see note | `output/matching_results.tsv`, `output/candidate_pairs.tsv` |
 
-\* Times on an 8-vCPU / 64 GB AWS r6i.2xlarge; every step also runs in 16 GB (chunked). The submitted model is the step-5f matcher: trained on 40% of train S1 (3.6M candidate pairs, 49 features), with the pruner fitted in step 5 on 20% of S1. Steps 5–6 first build the cheap pruning features on the wide candidate set
+\* Times on an 8-vCPU / 64 GB AWS r6i.2xlarge; every step also runs in 16 GB (chunked). The submitted model is the step-5f matcher: trained on 60% of train S1 (5.4M candidate pairs, 49 features), with the pruner fitted in step 5 on 20% of S1. Steps 5–6 first build the cheap pruning features on the wide candidate set
 (train 47 min for 20% of S1, test ~3 h), prune to ≤10 candidates per S1 (~5–6), add the exact-key routes (~0.7 per S1), then rebuild the full
 features on the kept pairs only (minutes) — the matcher trains and predicts on exactly `candidate_pairs.tsv`.
 
