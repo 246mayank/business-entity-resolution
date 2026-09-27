@@ -11,15 +11,18 @@
 The pipeline has three stages:
 
 1. **Normalisation with learned dictionaries.** Indic-script → English and state-code → state-name maps are mined only from the training ground truth.
-2. **Scalable, country-partitioned sparse TF-IDF retrieval** followed by a **learned pruning stage**. Candidates per Source 1 entity drop from **~50 to ~5–6** with **no loss in final F0.5**.
-3. A **LightGBM matcher** over 39 string, address-number and candidate-context features. It is followed by a **one-owner assignment**, since each Source 2/3 record belongs to at most one Source 1 entity, and a threshold tuned directly on macro F0.5.
+2. **Scalable, country-partitioned sparse TF-IDF retrieval** followed by a **learned pruning stage** and **exact-key routes**. Candidates per Source 1 entity drop from **~50 to ~7**, while the key routes recover identical copies that frequency-capped search misses (pair recall 0.944 → 0.961).
+3. A **LightGBM matcher** over 46 string, address-number, first-token and candidate-context features. It is followed by a **one-owner assignment**, since each Source 2/3 record belongs to at most one Source 1 entity, and a threshold tuned directly on macro F0.5.
 
 Every learned component is fitted on train only. Nothing depends on the country label, so France, which never appears in training, is handled the same way as US and India.
 
 Headline numbers:
-- full-train validation macro F0.5 **0.9415** (first model)
-- public leaderboard **0.935** (first submission) → **0.9507** (final model)
-- final model (pruned candidates + address-number features): full-train validation macro F0.5 **0.9579**
+| Version | Full-train valid macro F0.5 | Public leaderboard |
+|---|---|---|
+| first model (wide candidates, 33 features) | 0.9415 | 0.935 |
+| + learned pruning, address-number features (39) | 0.9580 | 0.9504 |
+| + exact-key candidate routes | 0.9635 | 0.9563 |
+| **+ first-token and relative-to-best features (46) — submitted** | **0.9669** | **0.9598** |
 
 ---
 
@@ -79,13 +82,13 @@ EDA was done on a deterministic 5% dev sample plus the full data (`notebooks/A_0
 **Core innovations:**
 1. **Learned, leakage-free normalisation dictionaries** (Indic tokens and a per-country place map) mined only from train GT pairs.
 2. **Place-conditioned sparse retrieval.** The combined name+address search runs inside each shared address component (city, district or state), which separates generic names ("… Private Limited") that global search cannot.
-3. **Two-stage candidate generation.** Retrieval gives ~50 candidates; a 17-feature learned pruner cuts that to ~5 per S1. The matcher only ever scores the pruned set, which is what `candidate_pairs.tsv` contains.
+3. **Two-stage candidate generation.** Retrieval gives ~50 candidates; a 17-feature learned pruner cuts that to ~5 per S1, and exact-key routes add back up to 3 identical-key records (~0.7 per S1). The matcher only ever scores this set, which is what `candidate_pairs.tsv` contains.
 4. **One-owner assignment and a decision rule tuned directly on macro F0.5**, including singletons.
 
 ```
 raw TSV ──► Parquet cache ──► normalize (C1) ──► blocking: 6 sparse TF-IDF searches (C2, ~50/S1)
-        ──► features (39) ──► learned pruner (≤10/S1, p≥0.01 → ~5/S1) = candidate_pairs.tsv
-        ──► LightGBM matcher ──► threshold + one-owner ──► matching_results.tsv
+        ──► features ──► learned pruner (≤10/S1, p≥0.01 → ~5/S1) ──► + exact-key routes (≤3/S1)
+        = candidate_pairs.tsv (~7/S1) ──► features (46) ──► LightGBM matcher ──► threshold + one-owner ──► matching_results.tsv
 ```
 
 All stages exchange validated Parquet files (`src/contracts.py`: schemas, id-existence, same-country and one-owner checks). Every step is chunked or streamed so the full pipeline runs on a 16 GB laptop.
@@ -174,6 +177,28 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 - **Test:** 86.8M → **10.7M pairs, 6.18 candidates per S1**. 2,524 S1 have no candidate, so they get empty lists.
 - **Candidate pairs in the submitted file:** **10,706,441** for 1,732,544 test S1 (6.18 per S1).
 
+### 3.4 Exact-key routes after pruning (`src/keyroute.py`)
+
+The absolute `MAX_DF` cap has a blind spot. A record whose tokens are all common, e.g. "behavioral health clinic, 132 highway 89 mayflower ar", is searched on its rare tokens only (here "mayflower"), so identical copies can fall outside the top K. On the full-train valid fold, 16.6k true pairs were missed by retrieval. A third of them share an exact key with their S1. Four join-based routes (no similarity search) recover them:
+
+| route | key |
+|---|---|
+| name | same name_core token set + a shared address place |
+| addr | same addr_clean token set |
+| hn | same house number + a shared address place |
+| name_only | same name_core token set, for records with an empty address |
+
+Key groups above a size cap are skipped. Pairs not already in the wide set are ranked per S1 by name + address token Jaccard, and the top 3 with a score ≥ 0.8 are added (flag bit 32). They are added to the wide set as well, so per-record competitor counts see them on train and test alike. The routes run after pruning and before the feature rebuild, so the matcher scores exactly this final set.
+
+| Full train, valid fold | Pruned | **Pruned + key routes (final)** |
+|---|---|---|
+| Candidates per S1 | 5.11 | **5.85** |
+| Pair recall | 0.9436 | **0.9610** |
+| Oracle macro F0.5 | 0.9791 | **0.9873** |
+| Matcher macro F0.5 (retrained) | 0.9580 | **0.9635** |
+
+The matcher accepts 83% of the true key-route pairs at 96.5% precision.
+
 **How true matches are protected**
 - Six complementary retrieval routes, each contributing unique true pairs (table above).
 - The reverse search exploits the one-owner structure.
@@ -186,13 +211,14 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 
 ## 4. Matching Model
 
-**Features** (39; `src/features.py`, computed on the pruned candidates in 20k-S1 chunks and streamed to disk)
+**Features** (46; `src/features.py`, computed on the pruned candidates in 20k-S1 chunks and streamed to disk)
 
 - **Name**
   - rapidfuzz token-set, token-sort, partial and plain ratio on `name_core`
   - ratio and partial ratio on the space-less name (domain-squashed names)
   - char 2–3-gram TF-IDF cosine (`char_wb`, 50k vocabulary; the vectoriser is fitted once on a random 200k-text subsample of train and persisted, so train and test share one vocabulary)
   - length ratio
+  - **first token vs the rest:** first-word equality (3-state) and Jaro–Winkler, token-set ratio of the rest, and a "first word swapped, rest identical" flag, which is the signature of distractor copies (`Kline Platinum Land Care` vs `Hurley Platinum Land Care`)
   - name frequency of both sides among the dataset's S1 (common names are weak evidence)
   - legal-form agreement: 3-state (equal / missing / conflict)
 - **Address**
@@ -204,11 +230,13 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
   - a combined name/address score
 - **Candidate context**
   - blocking cosines, rank and reverse rank
-  - the five blocker flag bits
+  - the blocker flag bits
   - `n_cands` per S1
   - `n_s1_for_id` (S1s competing for the same record, counted over the unpruned candidate set, which covers every S1 on both train and test; counting over the pruned train set of a 20% S1 subsample would show test ~5× more competitors than training)
   - number of the record's candidates with a near-identical name (blocking name cosine ≥ 0.9)
   - gap between this pair's blocking name similarity and the S1's best one
+  - **relative to the best other candidate of the same S1:** name token-set ratio and address cosine minus the best other candidate's value (differences, not counts, so they stay in range when test has more candidates per S1)
+  - key-route flag (pair added by an exact-key route)
 - **Source**
   - `is_s3`; native-script flag of the S2/S3 record
 - **Country is never a feature**, so France is not out-of-vocabulary.
@@ -217,7 +245,8 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 - Parameters: `num_leaves` 127, `learning_rate` 0.05, feature/bagging fraction 0.8, L1 0.1 / L2 1.0, `scale_pos_weight = neg/pos`, up to 6000 rounds (the first full-train model hit the earlier 3000 cap while still improving).
 - Early stopping (80 rounds) on a held-out 10% of train-fold S1.
 - First model: trained on the wide candidates of 20% of train S1 (15.1M pairs, 1.01M positives).
-- Final model: trained on the **pruned** candidates of 20% of train S1 (1.57M pairs, 64% positives, the hard cases near the boundary); threshold 0.60 (no precision guard). Per-record competitor counts (`n_s1_for_id`, `n_same_name_cands`) are counted over the unpruned candidates, which cover every S1 on both train and test (counting over the pruned 20%-S1 train file would show test ~5x more competitors than training — a skew found and fixed before the final submission). Trained in 2.5 min on an 8-vCPU AWS instance.
+- Submitted model: trained on the final candidates (pruned + key routes) of 20% of train S1 (1.80M pairs, 57% positives), 46 features, threshold 0.62.
+- Previous model: trained on the **pruned** candidates of 20% of train S1 (1.57M pairs, 64% positives, the hard cases near the boundary); threshold 0.60 (no precision guard). Per-record competitor counts (`n_s1_for_id`, `n_same_name_cands`) are counted over the unpruned candidates, which cover every S1 on both train and test (counting over the pruned 20%-S1 train file would show test ~5x more competitors than training — a skew found and fixed before the final submission). Trained in 2.5 min on an 8-vCPU AWS instance.
 
 **Decision.**
 - Score → keep pairs with `p ≥ t` → **one-owner assignment** (each S2/S3 record goes only to its highest-probability S1).
@@ -238,6 +267,9 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 **Tried and not kept** (dev sample, same valid fold):
 - A second-stage re-ranker on out-of-fold stage-1 probabilities plus competition features (rank and margin within the record and within the S1): 0.9850 vs 0.9850, with more wrong merges. The stage-1 context features already carry this signal.
 - `learning_rate` 0.1 and/or no `scale_pos_weight`: 0.9845–0.9847 vs 0.9849 for the baseline, all within noise.
+- *Full train:* orphan negatives weighted ×1.8 in training and threshold tuning, so the model sees the test orphan rate (~40% vs 26% in train): +0.0003 on an orphan-weighted valid score. The same simulation shows the orphan shift explains only ~0.0024 of the 0.007–0.008 valid→leaderboard gap.
+- *Full train:* 63 / 255 leaves, `min_child_samples` 50, and a separate threshold for empty-address pairs: all within ±0.0002 of the baseline, below the ±0.0004 run-to-run noise.
+- *Full train:* a "twin" feature (another candidate of the same S1 has this record's house number and a better name) raised valid F0.5 by +0.0010 but **failed the pre-upload gate**: train-valid matches +0.14%, test matches +2.20%. It fires more often on test (18.0% vs 16.5%) because test has more records per S1, the same mechanism as the rejected peer features, so it was never uploaded.
 
 ---
 
@@ -256,7 +288,15 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Final model — singleton / non-singleton F0.5 | 0.9651 / 0.9576 |
 | Final model — S1 with ≥ 1 false match (valid) | 2,682 (first model 2,935) |
 | Final model before the count-skew fix — public leaderboard | 0.9507 |
-| **Final model (skew fixed) — public leaderboard** | **0.950** |
+| Final model (skew fixed) — public leaderboard | 0.950 |
+| + key routes: candidates per S1 test / pair recall / oracle (valid) | 6.97 / 0.9610 / 0.9873 |
+| + key routes — valid macro F0.5 / public leaderboard | 0.9635 / 0.9563 |
+| **Submitted (key routes + 46 features) — valid macro F0.5** | **0.9669** (P 0.9919 / R 0.9283; singleton 0.9716) |
+| Submitted — S1 with ≥ 1 false match (valid) | 2,226 |
+| **Submitted — public leaderboard** | **0.9598** |
+| Submitted — test matches / candidates | 5,672,166 (3.27 per S1) / 12,061,729 (6.97 per S1) |
+
+Before every upload, test matches per S1 were compared per country with the train-valid change of the same model (submitted: +0.15% on test vs +0.18% on valid; France +0.2%, India +0.4%, US −0.15%). The rejected peer-feature model failed this check (+7.6% vs +0.6%).
 
 Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as train. Empty lists: France 6.6%, India 7.2%, US 6.5%. The unlabelled country behaves like the labelled ones.
 
@@ -280,6 +320,8 @@ Most of the gain came from:
 - normalisation dictionaries learned from the training labels
 - **multi-route, country-partitioned sparse retrieval**
 - a **learned pruning stage** that shrinks candidates ~10× at no cost in F0.5
+- **exact-key routes** that repair the blind spot of frequency-capped search (+0.0055 valid, +0.006 leaderboard)
+- per-pair and relative-to-best features aimed at distractor copies, rather than candidate counts, which do not transfer when test has more candidates per S1
 - a precision-oriented LightGBM matcher with a global one-owner decision tuned on the competition metric
 
 The main lesson: the 5% sample over-estimated every score (12× fewer distractors), while a full-train valid fold predicted the leaderboard within 0.007. Measuring at full density early drove the place-conditioned search, the pruning stage and the streaming implementation that fits the pipeline in 16 GB.

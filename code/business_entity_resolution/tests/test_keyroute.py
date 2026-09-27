@@ -19,9 +19,9 @@ def cache(tmp_path, monkeypatch):
     (tmp_path / "candidates").mkdir()
     _norm(["S1-1", "S1-2"], ["behavioral health clinic", "acme"], ["132 highway 89 mayflower ar", "5 main st boston ma"],
           ["132", "5"], [["mayflower"], ["boston"]]).write_parquet(C.norm_path("test", 1))
-    _norm(["S2-1", "S2-2", "S2-3"], ["behavioral health clinic", "zzz", "acme"],
-          ["132 highway 89 mayflower ar", "999 other rd", ""], ["132", "999", ""], [["mayflower"], ["reno"], []]
-          ).write_parquet(C.norm_path("test", 2))
+    _norm(["S2-1", "S2-2", "S2-3", "S2-4"], ["behavioral health clinic", "zzz", "acme", "acme co"],
+          ["132 highway 89 mayflower ar", "999 other rd", "", "5 main street bostn ma"], ["132", "999", "", "5"],
+          [["mayflower"], ["reno"], [], ["bostn"]]).write_parquet(C.norm_path("test", 2))
     _norm(["S3-1"], ["health clinic behavioral"], ["mayflower ar 132 highway 89"], ["132"], [["mayflower"]]
           ).write_parquet(C.norm_path("test", 3))
     # S3-1 is already a (wide and pruned) candidate of S1-1
@@ -38,9 +38,10 @@ def test_add_finds_exact_key_pairs_and_is_idempotent(cache):
     K.add("test")
     first = pl.read_parquet(C.candidates_path("test")).sort("s1_id", "id")
     key = first.filter((pl.col("blk_flags") & C.FLAG_KEY) > 0)
-    # identical name+address copy, and the address-less record with the identical name; not the unrelated one
-    assert set(key.select("s1_id", "id").rows()) == {("S1-1", "S2-1"), ("S1-2", "S2-3")}
-    assert first.height == 4 and first.select("s1_id", "id").is_duplicated().sum() == 0
+    # identical name+address copy, the address-less record with the identical name, and the misspelt-city
+    # copy (house number + street word); not the unrelated one
+    assert set(key.select("s1_id", "id").rows()) == {("S1-1", "S2-1"), ("S1-2", "S2-3"), ("S1-2", "S2-4")}
+    assert first.height == 5 and first.select("s1_id", "id").is_duplicated().sum() == 0
     K.add("test")
     assert pl.read_parquet(C.candidates_path("test")).sort("s1_id", "id").equals(first)
-    assert pl.read_parquet(wide_path(C.candidates_path("test"))).height == 4
+    assert pl.read_parquet(wide_path(C.candidates_path("test"))).height == 5
