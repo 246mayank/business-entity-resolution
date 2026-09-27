@@ -12,7 +12,7 @@ The pipeline has three stages:
 
 1. **Normalisation with learned dictionaries.** Indic-script → English and state-code → state-name maps are mined only from the training ground truth.
 2. **Scalable, country-partitioned sparse TF-IDF retrieval** followed by a **learned pruning stage**. Candidates per Source 1 entity drop from **~50 to ~5–6** with **no loss in final F0.5**.
-3. A **LightGBM matcher** over 39 string, address-number and candidate-context features. It is followed by a **one-owner assignment**, since each Source 2/3 record belongs to at most one Source 1 entity, and a threshold tuned directly on macro F0.5.
+3. A **LightGBM matcher** over 48 string, address-number, candidate-context and peer-agreement features. It is followed by a **one-owner assignment**, since each Source 2/3 record belongs to at most one Source 1 entity, and a threshold tuned directly on macro F0.5.
 
 Every learned component is fitted on train only. Nothing depends on the country label, so France, which never appears in training, is handled the same way as US and India.
 
@@ -20,6 +20,7 @@ Headline numbers:
 - full-train validation macro F0.5 **0.9415** (first model)
 - public leaderboard **0.935** (first submission) → **0.9507** (final model)
 - final model (pruned candidates + address-number features): full-train validation macro F0.5 **0.9579**
+- final model + peer-agreement features: full-train validation macro F0.5 **TBD (AWS run)**; the same change measured locally gave 0.9582 → **0.9612**
 
 ---
 
@@ -84,7 +85,7 @@ EDA was done on a deterministic 5% dev sample plus the full data (`notebooks/A_0
 
 ```
 raw TSV ──► Parquet cache ──► normalize (C1) ──► blocking: 6 sparse TF-IDF searches (C2, ~50/S1)
-        ──► features (39) ──► learned pruner (≤10/S1, p≥0.01 → ~5/S1) = candidate_pairs.tsv
+        ──► features (48) ──► learned pruner (≤10/S1, p≥0.01 → ~5/S1) = candidate_pairs.tsv
         ──► LightGBM matcher ──► threshold + one-owner ──► matching_results.tsv
 ```
 
@@ -162,7 +163,7 @@ A LightGBM model (200 trees, 63 leaves) is trained on the train fold over 17 che
 - place Jaccard
 - house-number match
 
-It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The full 39 features are then rebuilt on the kept pairs only, so candidate-context features (`n_cands`, `n_s1_for_id`, rank gap) describe the final set. The matcher is trained on, and predicts only, these pairs, and they are exactly `output/candidate_pairs.tsv`.
+It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The full 48 features are then rebuilt on the kept pairs only, so candidate-context features (`n_cands`, `n_s1_for_id`, rank gap) describe the final set. The matcher is trained on, and predicts only, these pairs, and they are exactly `output/candidate_pairs.tsv`.
 
 | Full train, valid fold | Wide (retrieval) | **Pruned (final)** |
 |---|---|---|
@@ -186,7 +187,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 
 ## 4. Matching Model
 
-**Features** (39; `src/features.py`, computed on the pruned candidates in 20k-S1 chunks and streamed to disk)
+**Features** (48; `src/features.py`, computed on the pruned candidates in 20k-S1 chunks and streamed to disk)
 
 - **Name**
   - rapidfuzz token-set, token-sort, partial and plain ratio on `name_core`
@@ -209,6 +210,13 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
   - `n_s1_for_id` (S1s competing for the same record, counted over the unpruned candidate set, which covers every S1 on both train and test; counting over the pruned train set of a 20% S1 subsample would show test ~5× more competitors than training)
   - number of the record's candidates with a near-identical name (blocking name cosine ≥ 0.9)
   - gap between this pair's blocking name similarity and the S1's best one
+- **Peer agreement** (the S1's other candidates; computed in the post-prune rebuild only)
+  - best and mean address similarity to the S1's other top-10 candidates, and how many agree strongly (token-set ≥ 0.9)
+  - best number-set Jaccard with them
+  - rank of this candidate's address match and number match among the S1's candidates
+  - same name but conflicting numbers (the sister-branch signature), and how many such candidates the S1 has
+  - DBA alias of the S2/S3 record vs the S1 name
+  - Why: an S1's true matches describe the same place and agree with each other; a sister branch at a neighbouring address disagrees with them. This was the dominant false positive (see §5).
 - **Source**
   - `is_s3`; native-script flag of the S2/S3 record
 - **Country is never a feature**, so France is not out-of-vocabulary.
@@ -218,6 +226,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 - Early stopping (80 rounds) on a held-out 10% of train-fold S1.
 - First model: trained on the wide candidates of 20% of train S1 (15.1M pairs, 1.01M positives).
 - Final model: trained on the **pruned** candidates of 20% of train S1 (1.57M pairs, 64% positives, the hard cases near the boundary); threshold 0.60 (no precision guard). Per-record competitor counts (`n_s1_for_id`, `n_same_name_cands`) are counted over the unpruned candidates, which cover every S1 on both train and test (counting over the pruned 20%-S1 train file would show test ~5x more competitors than training — a skew found and fixed before the final submission). Trained in 2.5 min on an 8-vCPU AWS instance.
+- Final model with peer features: same setup, 48 features; early stopping at **TBD** rounds, threshold **TBD**. (Local replicate: 2,872 rounds, threshold 0.62.)
 
 **Decision.**
 - Score → keep pairs with `p ≥ t` → **one-owner assignment** (each S2/S3 record goes only to its highest-probability S1).
@@ -257,6 +266,10 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Final model — S1 with ≥ 1 false match (valid) | 2,682 (first model 2,935) |
 | Final model before the count-skew fix — public leaderboard | 0.9507 |
 | **Final model (skew fixed) — public leaderboard** | **[pending upload]** |
+| **Final model + peer features — valid macro F0.5** | **TBD (AWS run)**; local replicate 0.9612 (baseline 0.9582) |
+| Final model + peer features — micro precision / recall | TBD; local 0.9924 / 0.9168 |
+| Final model + peer features — S1 with ≥ 1 false match (valid) | TBD; local 2,060 (baseline 2,708, −24%) |
+| **Final model + peer features — public leaderboard** | **TBD** |
 
 Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as train. Empty lists: France 6.6%, India 7.2%, US 6.5%. The unlabelled country behaves like the labelled ones.
 
@@ -271,6 +284,8 @@ Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as trai
 - 18% have an empty S2/S3 address.
 - Some residual name noise (`1imited` with a digit-for-letter typo; unaligned transliterations like `priiabthte`).
 - The address-number features were designed from exactly this analysis. On the dev sample they moved F0.5 from 0.9808 to 0.9851 and cut entities with a false match from 558 to 436.
+
+**What the false-positive analysis led to.** On the final model, 94% of wrong pairs were an *extra* record attached to an S1 that already had its true matches, usually a sister branch one number away. Threshold-side fixes did not help: a stricter threshold for lone matches lowered F0.5 (0.9567 → 0.9472), and a relative cut against the S1's best candidate removed 16% of FPs but still cost F0.5. The fix had to be discrimination, so the **peer-agreement features** (§4) compare each candidate with the S1's other candidates. On full train (20% S1, pruned, same folds) they moved macro F0.5 **0.9582 → 0.9612**, precision 0.9901 → 0.9924, recall 0.9115 → 0.9168, and cut S1 with a false match **2,708 → 2,060 (−24%)**. The one cost: singleton F0.5 0.9629 → 0.9592.
 
 ---
 
@@ -299,7 +314,7 @@ The main lesson: the 5% sample over-estimated every score (12× fewer distractor
 | `src/contracts.py` | stage contracts C1–C4 (schemas, validators, loaders) |
 | `src/normalize.py` | normalisation, learned Indic dictionary and place map |
 | `src/blocking.py` | sparse TF-IDF retrieval (6 searches) |
-| `src/features.py` | 39 pair features (chunked, streamed) |
+| `src/features.py` | 48 pair features (chunked, streamed) |
 | `src/prune.py` | learned candidate pruning (final candidate stage) |
 | `src/train.py`, `src/predict.py` | LightGBM matcher; scoring, threshold tuning, one-owner decision |
 | `src/evaluate.py` | macro F0.5 (per entity, singletons included), blocking recall and oracle |

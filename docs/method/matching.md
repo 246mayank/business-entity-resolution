@@ -5,7 +5,7 @@ Owner: Yash. Code: `src/features.py`, `src/train.py`, `src/predict.py`. Experime
 Input is the pruned candidate set (`src/prune.py`, ~5 per S1). Output is `models/matcher.txt` plus
 `models/decision.json`, and the final pairs that `run_pipeline` writes to `matching_results.tsv`.
 
-## 1. Features (39)
+## 1. Features (48)
 
 Computed per chunk of 20k S1 entities and streamed to one Parquet file, so peak memory stays
 at 2.5–3 GB regardless of dataset size. Strings come from normalisation (C1): `name_core`,
@@ -22,6 +22,9 @@ at 2.5–3 GB regardless of dataset size. Strings come from normalisation (C1): 
 | Blocking context (9) | blocking name/address cosines, rank, reverse rank; the five blocker flag bits | How the pair was found and how it ranked |
 | Candidate context (4) | `n_cands` per S1; `n_s1_for_id` (S1s competing for the record); candidates of the record with blocking name cosine ≥ 0.9; gap to the S1's best blocking name similarity | Competition between S1s for one record |
 | Source (2) | `is_s3`; native-script flag of the S2/S3 record | S2 and S3 have different noise |
+| Peer agreement (4) | vs the S1's other top-10 candidates (by the combined score): best / mean address token-set, count ≥ 0.9, best number-set Jaccard | True matches agree with each other; a sister branch does not (§2b) |
+| Within-S1 standing (4) | rank of the address match and of the number match among the S1's candidates; same name but conflicting numbers, and its count per S1 | Is this the S1's best match or a runner-up sibling? |
+| Alias (1) | token-set ratio of the S2/S3 DBA alias vs the S1 name | `X DBA Y` records (0.7% of pairs) |
 
 The per-record context (`n_s1_for_id`, near-identical-name count) is counted over the **unpruned**
 candidate file, which covers every S1 on both train and test. After `--s1-pct 20` + pruning, the
@@ -58,6 +61,37 @@ A one-digit difference was usually a **neighbouring building**, not a typo:
 | 60 36 / 60 39 | 1 | 1.4 | neighbouring flat → against |
 
 Effect on the sample valid fold: macro F0.5 0.9808 → **0.9851**, entities with a false match 558 → **436**.
+
+## 2b. Peer agreement: the sister-branch false positive
+
+On the final full-train model, 94% of wrong pairs were an **extra** record on an S1 that already had
+its true matches: typically the same name one number away (`1390` vs `1393`, flat `101` vs `104`).
+Decision rules could not remove them without losing F0.5 (tested on the final scores: a stricter
+threshold for lone matches, a cut relative to the S1's best candidate, a one-owner margin).
+
+The S1's true matches describe the same place, so they agree with **each other**. Each candidate is
+therefore compared with the S1's other top-10 candidates. Feature means on a 1% train slice:
+
+| | wrong pairs | true pairs |
+|---|---|---|
+| best address similarity to a peer | 0.53 | 0.92 |
+| best number-set Jaccard with a peer | 0.01 | 0.68 |
+| rank of its address match within the S1 | 3.97 | 1.96 |
+| same name, conflicting numbers | 12.7% | 3.4% |
+
+Peers are compared only in the post-prune rebuild (≤ 10 candidates per S1, detected by
+`candidates/<ds>.wide.parquet` existing). In the wide pass they are placeholders, since the pruner
+does not use them. Rebuild time 221 s vs 217 s.
+
+Full-train valid fold (20% S1, pruned candidates, same folds, skew fix in both):
+
+| | 39 features | **48 features** |
+|---|---|---|
+| macro F0.5 | 0.9582 | **0.9612** (+0.0030) |
+| precision / recall | 0.9901 / 0.9115 | **0.9924 / 0.9168** |
+| entities with a false match | 2,708 | **2,060** (−24%) |
+| singleton F0.5 | 0.9629 | 0.9592 |
+| threshold / rounds | 0.59 / 2810 | 0.62 / 2872 |
 
 ## 3. Model
 

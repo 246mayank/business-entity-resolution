@@ -12,3 +12,8 @@ Valid fold = S1 entities with `fold == "valid"` (see `contracts.load_s1_folds`).
 | 2026-09-27 | — | sample_5pct | leave-one-country-out (France proxy) | unseen India 0.9707 (−0.012), unseen US 0.9803 (−0.006); transferred threshold within 0.0002 of oracle |
 | 2026-09-27 | ec7efbc | sample_5pct | lr 0.1 and/or no scale_pos_weight, fine grid to 0.999, no guard | 0.9845–0.9847 vs baseline 0.9849 — kept lr 0.05 + weighting; cap 6000 for full train |
 | 2026-09-27 | (Mayank) | train, 20% S1 | first full-train model (33 features, guard 0.987, t=0.97) | 0.9415 (US 0.9473, India 0.9329), P 0.989, R 0.874; unguarded t=0.96 → 0.9426; leaderboard 0.935 |
+| 2026-09-27 | (Mayank) | train, 20% S1, pruned | final model: number features + tweaks, pruned candidates (competitor counts skewed) | 0.9579, P 0.9906, R 0.9096; leaderboard **0.950747** |
+| 2026-09-27 | — | sample_5pct | skew sensitivity: inflate `n_s1_for_id` / `n_same_name_cands` ×2 / ×3 / ×5 | 0.9831 / 0.9803 / 0.9782 vs 0.9848, all recall |
+| 2026-09-27 | 32e7cd0 | train, 20% S1, pruned | skew fix: competitor counts over unpruned C2 (local run; AWS: 0.9580, +37.9k test matches) | 0.9582, P 0.9901, R 0.9115, FP entities 2,708 |
+| 2026-09-27 | bd99d1b | train, 20% S1, pruned | peer-agreement features (48 features) | **0.9612**, P 0.9924, R 0.9168, FP entities **2,060**, singleton F0.5 0.9592 |
+| 2026-09-27 | 364d297 | sample_5pct, clean clone | reproduction check of the final code: fresh clone + pinned venv → 67 tests → full pipeline incl. prune | 0.9858 (39-feature clean clone: 0.9846), P 0.9946, R 0.9716; peers computed on 88% of pairs (rest: single-candidate S1) |
