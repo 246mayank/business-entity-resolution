@@ -43,7 +43,7 @@ Step 6 ends with the organisers' validator (`utils/validate_submission.py`, run 
 | Contracts | `src/contracts.py` | C1 normalised records, C2 candidates, C3 scores, C4 final pairs: schemas + validators (ids exist, same country, one owner per S2/S3 id) |
 | Normalise | `src/normalize.py` | accent folding, junk/DBA/domain/legal-form handling, learned Indic→English dictionary, learned per-country place map |
 | Retrieve | `src/blocking.py` | per-country sparse TF-IDF top-K: name, address, combined, place-conditioned, char 4-grams, reverse |
-| Features | `src/features.py` | 48 pair features, computed per S1 chunk and streamed to one Parquet |
+| Features | `src/features.py` | 39 pair features, computed per S1 chunk and streamed to one Parquet |
 | Prune | `src/prune.py` | learned pruner (17 cheap features) keeps ≤10 candidates/S1 with p ≥ 0.01 — the final candidate set; wide copies kept as `*.wide.parquet`; the pipeline then rebuilds the full features on the kept pairs |
 | Match | `src/train.py`, `src/predict.py` | LightGBM matcher; threshold tuned on the valid fold for macro F0.5; one-owner assignment; `models/decision.json` |
 | Evaluate | `src/evaluate.py` | competition metric (per-S1 F0.5, macro, singletons included), blocking recall and oracle ceiling |
