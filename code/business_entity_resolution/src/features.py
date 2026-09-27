@@ -90,7 +90,7 @@ def _fuzz_batch(a: list[str], b: list[str], scorer) -> np.ndarray:
 S1_CHUNK = 20_000  # S1 entities per feature chunk (~1M pairs), bounds peak memory
 
 NORM_COLS = ["entity_id", "name_core", "addr_clean", "legal_form",
-             "house_no", "is_native_script", "addr_places"]
+             "house_no", "is_native_script", "addr_places", "name_alias"]
 
 FLAG_BITS = [("flag_name", 1), ("flag_addr", 2), ("flag_char4", 4),
              ("flag_reverse", 8), ("flag_combo", 16)]
@@ -118,7 +118,8 @@ def _load_norm_ids(ds: str, ids: pl.DataFrame) -> pl.DataFrame:
 def _side(df: pl.DataFrame, key: str, suffix: str, name_freq: pl.DataFrame) -> pl.DataFrame:
     mapping = {"entity_id": key, "name_core": f"nc{suffix}", "addr_clean": f"ac{suffix}",
                "legal_form": f"lf{suffix}", "house_no": f"hn{suffix}",
-               "is_native_script": f"ns{suffix}", "addr_places": f"ap{suffix}"}
+               "is_native_script": f"ns{suffix}", "addr_places": f"ap{suffix}",
+               "name_alias": f"al{suffix}"}
     df = df.rename({k: v for k, v in mapping.items() if k in df.columns})
     return df.join(name_freq.rename({"_nfreq": f"_nfreq{suffix}"}),
                    left_on=f"nc{suffix}", right_on="name_core", how="left")
@@ -190,7 +191,45 @@ def _number_features(pairs: pl.DataFrame) -> pl.DataFrame:
              .drop("_r"))
 
 
-def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
+PEER_K = 10  # peers per S1: its top candidates by addr_name_combo
+PEER_COLS = ["peer_addr_max", "peer_addr_mean", "peer_n_agree", "peer_num_max"]
+
+
+def _peer_features(pairs: pl.DataFrame, combo: np.ndarray) -> pl.DataFrame:
+    """Agreement of each candidate with the S1's OTHER candidates (-1 = nothing to compare).
+
+    An S1's true matches describe the same place, so they agree with each other; a sister
+    branch at a neighbouring address (the dominant false positive) disagrees with them."""
+    def nums(col):
+        return (pl.col(col).fill_null("").str.extract_all(r"\d+")
+                .list.unique(maintain_order=True).list.head(MAX_NUMS))
+
+    p = pairs.select(pl.int_range(pl.len(), dtype=pl.UInt32).alias("_r"), "s1_id",
+                     pl.col("ac2").fill_null("").alias("a"), nums("ac2").alias("n"),
+                     pl.Series("combo", combo))
+    peers = (p.filter(pl.col("combo").rank("ordinal", descending=True).over("s1_id") <= PEER_K)
+              .select("s1_id", pl.col("_r").alias("_r2"), pl.col("a").alias("a2"), pl.col("n").alias("n2")))
+    x = (p.select("_r", "s1_id", "a", "n").join(peers, on="s1_id")
+          .filter(pl.col("_r") != pl.col("_r2")).drop("s1_id", "_r2"))
+
+    both_a = (x["a"] != "") & (x["a2"] != "")
+    sim = cpdist(x["a"].to_list(), x["a2"].to_list(), scorer=fuzz.token_set_ratio,
+                 workers=-1, dtype=np.float32) / np.float32(100)
+    x = x.with_columns(pl.when(pl.Series(both_a)).then(pl.Series("s", sim)).otherwise(None).alias("s"))
+    both_n = (pl.col("n").list.len() > 0) & (pl.col("n2").list.len() > 0)
+    x = x.with_columns(pl.when(both_n).then(
+            pl.col("n").list.set_intersection(pl.col("n2")).list.len()
+            / pl.col("n").list.set_union(pl.col("n2")).list.len()).otherwise(None).alias("nj"))
+
+    agg = x.group_by("_r").agg(pl.col("s").max().alias("peer_addr_max"),
+                               pl.col("s").mean().alias("peer_addr_mean"),
+                               (pl.col("s") >= 0.9).sum().alias("peer_n_agree"),
+                               pl.col("nj").max().alias("peer_num_max"))
+    return (p.select("_r").join(agg, on="_r", how="left").sort("_r")
+             .select([pl.col(c).cast(pl.Float32).fill_null(-1.0) for c in PEER_COLS]))
+
+
+def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec, with_peers: bool = True) -> pl.DataFrame:
     nc1, nc2 = pairs["nc1"].fill_null("").to_list(), pairs["nc2"].fill_null("").to_list()
     ac1, ac2 = pairs["ac1"].fill_null("").to_list(), pairs["ac2"].fill_null("").to_list()
 
@@ -222,6 +261,17 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
     num["addr_name_combo"] = np.where(both_addr, 0.4 * num["name_tsr"] + 0.6 * num["addr_tsr"],
                                       num["name_tsr"]).astype(np.float32)
 
+    # DBA alias of the S2/S3 record vs the S1 name
+    if "al2" in pairs.columns:
+        al2 = pairs["al2"].fill_null("")
+        a_sim = _fuzz_batch(al2.to_list(), pairs["nc1"].fill_null("").to_list(), fuzz.token_set_ratio)
+        num["alias_tsr"] = np.where((al2 != "").to_numpy(), a_sim, -1.0).astype(np.float32)
+    else:
+        num["alias_tsr"] = np.full(pairs.height, -1.0, dtype=np.float32)
+
+    peers = (_peer_features(pairs, num["addr_name_combo"]) if with_peers else
+             pl.DataFrame({c: np.full(pairs.height, -1.0, dtype=np.float32) for c in PEER_COLS}))
+
     if "ap1" in pairs.columns and "ap2" in pairs.columns:
         inter = pl.col("ap1").list.set_intersection(pl.col("ap2")).list.len()
         union = pl.col("ap1").list.set_union(pl.col("ap2")).list.len()
@@ -234,6 +284,7 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
     out = pairs.with_columns(
         [pl.Series(k, v) for k, v in num.items()]
         + _number_features(pairs).get_columns()
+        + peers.get_columns()
         + [((pl.col("blk_flags") & bit) > 0).cast(pl.Int8).alias(name) for name, bit in FLAG_BITS]
         + [
             _three_state("lf1", "lf2").alias("lf_match"),
@@ -251,6 +302,16 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
             pl.col("blk_rank").cast(pl.Float32),
             pl.col("blk_rev_rank").cast(pl.Float32),
         ]
+    )
+    # within-S1 standing: is this the S1's best address / number match, and is it a
+    # same-name candidate whose numbers conflict (a sister branch)?
+    same_name_diff_num = ((pl.col("name_ratio") >= 0.95) & (pl.col("num_both") == 1)
+                          & (pl.col("num_jaccard") == 0))
+    out = out.with_columns(
+        pl.col("addr_tsr").rank("min", descending=True).over("s1_id").cast(pl.Float32).alias("addr_rank_s1"),
+        pl.col("num_jaccard").rank("min", descending=True).over("s1_id").cast(pl.Float32).alias("num_rank_s1"),
+        same_name_diff_num.cast(pl.Int8).alias("same_name_diff_num"),
+        same_name_diff_num.sum().over("s1_id").cast(pl.Float32).alias("s1_same_name_diff_num"),
     )
     return out.select(["s1_id", "id"] + [c for c in FEATURE_COLS if c not in ID_SCOPED])
 
@@ -328,7 +389,7 @@ def build_features(dataset: str, s1_pct: int | None = None):
         for k in range(cands["_chunk"].max() + 1):
             pairs = (cands.filter(pl.col("_chunk") == k).drop("_chunk")
                      .join(left, on="s1_id").join(right, on="id"))
-            f = _chunk_features(pairs, name_vec, addr_vec)
+            f = _chunk_features(pairs, name_vec, addr_vec, with_peers=wide.exists())
             f.write_parquet(parts_dir / f"part_{part:05d}.parquet")
             n_rows += f.height
             part += 1
@@ -366,6 +427,8 @@ FEATURE_COLS = [
     "blk_name_sim", "blk_addr_sim", "blk_rank", "blk_rev_rank",
     "name_freq_s1", "name_freq_id", "n_same_name_cands",
     "num_both", "num_jaccard", "num_min_edit", "num_min_loggap", "hn_edit", "hn_loggap",
+    "peer_addr_max", "peer_addr_mean", "peer_n_agree", "peer_num_max",
+    "addr_rank_s1", "num_rank_s1", "same_name_diff_num", "s1_same_name_diff_num", "alias_tsr",
 ]
 
 
