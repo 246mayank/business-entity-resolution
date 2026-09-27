@@ -18,7 +18,7 @@ Every learned component is fitted on train only. Nothing depends on the country 
 
 Headline numbers:
 - full-train validation macro F0.5 **0.9415** (first model)
-- public leaderboard **0.935** (first submission)
+- public leaderboard **0.935** (first submission) → **0.9507** (final model)
 - final model (pruned candidates + address-number features): full-train validation macro F0.5 **0.9579**
 
 ---
@@ -240,7 +240,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The 
 | Final model — micro precision / recall | 0.9906 / 0.9096 |
 | Final model — singleton / non-singleton F0.5 | 0.9681 / 0.9573 |
 | Final model — S1 with ≥ 1 false match (valid) | 2,570 (first model 2,935) |
-| Final model — public leaderboard | [pending upload] |
+| **Final model — public leaderboard** | **0.9507** |
 
 Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as train. Empty lists: France 6.6%, India 7.2%, US 6.5%. The unlabelled country behaves like the labelled ones.
 
