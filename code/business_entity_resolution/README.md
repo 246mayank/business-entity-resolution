@@ -1,38 +1,58 @@
 # Business Entity Resolution — pipeline
 
-All commands run from this folder (`code/business_entity_resolution/`). Data is
-expected at `../../dataset/` (the organisers' `student_resource/dataset/`); set
-`BER_ROOT` to the folder containing `dataset/` to use another location.
+Reproduces `output/matching_results.tsv` and `output/candidate_pairs.tsv` from the organisers'
+data, using only what is in this folder. Methodology: `Documentation_template.md` at the package root.
 
-## Setup
+## Environment
+- Python **3.13** (tested with 3.13.5 on Windows 11 and 3.13.15 on Ubuntu 24.04), 16 GB RAM is enough (every step is chunked/streamed).
+- Linux only: LightGBM needs the OpenMP runtime — `sudo apt-get install -y libgomp1`.
+
 ```bash
 python -m venv .venv
-.venv/Scripts/activate        # Windows; use `source .venv/bin/activate` on Linux/macOS
-pip install -r requirements.txt
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -r requirements.txt      # pinned; pulls requirements/blocking.txt and requirements/matching.txt
 ```
 
-## Steps
-| Step | Command | Output |
+Data: the organisers' `dataset/` folder (train + test TSVs) must sit two levels up, i.e. `<root>/dataset/`,
+with this folder at `<root>/code/business_entity_resolution/`. Set `BER_ROOT=<root>` to use another
+location. All intermediate files go to `<root>/cache/` and `<root>/models/`; outputs to `<root>/output/`.
+Run every command from this folder.
+
+## Reproduce end to end
+
+| # | Step | Command | Time* | Output |
+|---|---|---|---|---|
+| 1 | Cache raw TSVs as Parquet | `python -m src.io_utils` | 30 s | `cache/*.parquet` |
+| 2 | Normalise (learns the Indic dictionary + place map from train first) | `python -m src.normalize` | 5–8 min | `cache/norm/*` |
+| 3 | Candidate retrieval, train | `python -m src.blocking --dataset train` | 70 min | `cache/candidates/train.parquet` (+ recall report) |
+| 4 | Candidate retrieval, test | `python -m src.blocking --dataset test` | 52 min | `cache/candidates/test.parquet` |
+| 5 | Train: features (20% of S1) → pruner → matcher → threshold | `python -m src.run_pipeline --dataset train --steps features prune train predict write --s1-pct 20` | see note | `models/`, valid-fold report |
+| 6 | Test: features → prune → predict → write → validate | `python -m src.run_pipeline --dataset test --steps features prune predict write validate --model-from train` | see note | `output/matching_results.tsv`, `output/candidate_pairs.tsv` |
+
+\* On a 16 GB, 8-core laptop. Steps 5–6 build features on the wide candidate set (train 47 min for 20% of
+S1, test ~3 h), then prune to ≤10 candidates per S1; model training ~25 min, test scoring a few minutes.
+
+Step 6 ends with the organisers' validator (`utils/validate_submission.py`, run from `<root>`), which must print `PASS`.
+
+## Stages and modules
+
+| Stage | Module | Notes |
 |---|---|---|
-| 1. Cache raw TSVs as Parquet | `python -m src.io_utils` | `cache/*.parquet` (~1 GB, ~25 s) |
-| 2. Build 5% dev sample | `python -m src.sample` | `cache/sample_5pct/` |
-| 2b. Stub C1/C2 for the sample (until real normalize/blocking land) | `python -m src.stub` | `cache/norm/sample_5pct_*`, `cache/candidates/sample_5pct.parquet` (~1 min) |
-| 2c. Normalise records (C1) | `python -m src.normalize` | `cache/norm/*` for train, test, sample (~4 min; learns `indic_dict.parquet` first) |
-| 2d. Candidate pairs (C2) | `python -m src.blocking --dataset sample_5pct` | `cache/candidates/sample_5pct.parquet` (~2 min; prints recall on the valid fold) |
-| End to end | `python -m src.run_pipeline --dataset sample_5pct` then `python -m src.run_pipeline --dataset test --model-from sample_5pct` | dev outputs in `output/dev/<dataset>/`; test outputs in `output/` + validator |
-| 3. Score a submission on train | `python -m src.evaluate --matching FILE [--candidates FILE]` | macro F0.5, blocking recall |
-| Tests | `python -m pytest -q tests` | |
+| I/O | `src/io_utils.py` | TSV read (all strings, no quoting, empty stays ""), Parquet cache, submission writers |
+| Contracts | `src/contracts.py` | C1 normalised records, C2 candidates, C3 scores, C4 final pairs: schemas + validators (ids exist, same country, one owner per S2/S3 id) |
+| Normalise | `src/normalize.py` | accent folding, junk/DBA/domain/legal-form handling, learned Indic→English dictionary, learned per-country place map |
+| Retrieve | `src/blocking.py` | per-country sparse TF-IDF top-K: name, address, combined, place-conditioned, char 4-grams, reverse |
+| Features | `src/features.py` | 39 pair features, computed per S1 chunk and streamed to one Parquet |
+| Prune | `src/prune.py` | learned pruner (17 cheap features) keeps ≤10 candidates/S1 with p ≥ 0.01 — the final candidate set; wide copies kept as `*.wide.parquet` |
+| Match | `src/train.py`, `src/predict.py` | LightGBM matcher; threshold tuned on the valid fold for macro F0.5; one-owner assignment; `models/decision.json` |
+| Evaluate | `src/evaluate.py` | competition metric (per-S1 F0.5, macro, singletons included), blocking recall and oracle ceiling |
+| Orchestrate | `src/run_pipeline.py` | steps `normalize block features prune train predict write validate`; dev outputs go to `output/dev/<dataset>/`, test outputs to `output/` |
+| Dev only | `src/sample.py`, `src/stub.py` | 5% dev sample with valid fold; throwaway stage stubs |
 
-Blocking, features, training and prediction (`blocking.py`, `features.py`,
-`train.py`, `predict.py`, `run_pipeline.py`) are still to be implemented.
+Validation fold: S1 entities with `(numeric id // 100) % 5 == 0` (20%); the matcher early-stops on a further
+10% of the train fold, so the valid fold is only used for threshold tuning and reporting.
 
-## Modules
-- `contracts.py` — stage interfaces C1–C4 (columns, dtypes, paths), validators, `write_*`/`load_*` helpers, dataset loaders (`load_records`, `load_s1_folds`, `load_ground_truth`). See `docs/plan/00_combined_plan.md` §3.
-- `normalize.py` — raw records → C1 + extras (`name_nospace`, `name_alias`, `is_domain`, `addr_street`, `addr_places`); learned Indic→English token dictionary.
-- `blocking.py` — C1 → C2: per-country sparse TF-IDF top-K (name, address, combined, place-conditioned, char 4-grams, reverse).
-- `run_pipeline.py` — orchestrates normalize → block → features → train → predict → write → validate (`--steps` for a subset).
-- `stub.py` — throwaway contract-valid C1/C2 for `sample_5pct`.
-- `config.py` — paths, seeds, sample/validation bucketing (by numeric entity id, deterministic).
-- `io_utils.py` — TSV reading (all strings, no quoting/NA inference), Parquet cache, submission writers.
-- `sample.py` — dev sample: 5% of train S1 + all their matches + 5% of other S2/S3 records; `fold` column marks the 20% validation split.
-- `evaluate.py` — competition metric (per-entity F0.5, macro-averaged, singletons included) and blocking recall / oracle ceiling.
+## Tests
+```bash
+python -m pytest -q tests
+```
