@@ -9,7 +9,8 @@ Steps (in order; --steps picks a subset):
   block      C2 via src.blocking           (subprocess)
   features   pair features via src.features (--s1-pct: only that % of S1, for full train)
   prune      learned candidate pruning via src.prune: fit on train/sample, keep <= K per S1;
-             rewrites C2 + features to the kept pairs (wide copies kept as *.wide.parquet)
+             rewrites C2 to the kept pairs (wide copies kept as *.wide.parquet), then rebuilds the
+             full features on the kept pairs (the matcher never sees the wide set)
   train      src.train.fit, then src.predict.decide tunes the threshold on the valid fold
              and writes models/decision.json (not for test)
   predict    score with models/matcher.txt, threshold from models/decision.json (or
@@ -68,8 +69,11 @@ def step_features(dataset: str, s1_pct: int | None = None) -> None:
     features.build_features(dataset, s1_pct)
 
 
-def step_prune(dataset: str, model_from: str) -> None:
-    from . import prune
+def step_prune(dataset: str, model_from: str, s1_pct: int | None = None) -> None:
+    """Prune the wide candidates, then rebuild the full features on the kept pairs only, so the
+    matcher trains and predicts on exactly the final candidate set (candidate_pairs.tsv), with
+    per-S1 / per-id context features computed over that set."""
+    from . import features, prune
     if dataset == "test":
         meta = json.loads(prune.META_PATH.read_text()) if prune.META_PATH.exists() else {}
         if meta.get("trained_on") != model_from:
@@ -78,6 +82,7 @@ def step_prune(dataset: str, model_from: str) -> None:
         prune.apply(dataset)
     else:
         prune.apply(dataset, prune.fit(dataset))
+    features.build_features(dataset, s1_pct)
 
 
 def step_train(dataset: str) -> None:
@@ -171,7 +176,7 @@ def run(dataset: str, steps=STEPS, model_from: str | None = None, threshold: flo
         elif step == "features":
             step_features(dataset, s1_pct)
         elif step == "prune":
-            step_prune(dataset, model_from)
+            step_prune(dataset, model_from, s1_pct)
         else:
             globals()[f"step_{step}"](dataset)
         print(f"   {step} done in {time.time() - t:.0f}s", flush=True)

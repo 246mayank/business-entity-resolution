@@ -162,7 +162,7 @@ A LightGBM model (200 trees, 63 leaves) is trained on the train fold over 17 che
 - place Jaccard
 - house-number match
 
-It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. Only these pairs are scored by the matcher, and they are exactly `output/candidate_pairs.tsv`.
+It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. The full 39 features are then rebuilt on the kept pairs only, so candidate-context features (`n_cands`, `n_s1_for_id`, rank gap) describe the final set. The matcher is trained on, and predicts only, these pairs, and they are exactly `output/candidate_pairs.tsv`.
 
 | Full train, valid fold | Wide (retrieval) | **Pruned (final)** |
 |---|---|---|
@@ -186,7 +186,7 @@ It keeps **at most 10 candidates per S1 with pruner probability ≥ 0.01**. Only
 
 ## 4. Matching Model
 
-**Features** (39; `src/features.py`, computed in 20k-S1 chunks and streamed to disk)
+**Features** (39; `src/features.py`, computed on the pruned candidates in 20k-S1 chunks and streamed to disk)
 
 - **Name**
   - rapidfuzz token-set, token-sort, partial and plain ratio on `name_core`
