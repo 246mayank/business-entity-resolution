@@ -12,7 +12,7 @@ The pipeline has three stages:
 
 1. **Normalisation with learned dictionaries.** Indic-script → English and state-code → state-name maps are mined only from the training ground truth.
 2. **Scalable, country-partitioned sparse TF-IDF retrieval** followed by a **learned pruning stage** and **exact-key routes**. Candidates per Source 1 entity drop from **~50 to ~7**, while the key routes recover identical copies that frequency-capped search misses (pair recall 0.944 → 0.961).
-3. A **LightGBM matcher** over 46 string, address-number, first-token and candidate-context features. It is followed by a **one-owner assignment**, since each Source 2/3 record belongs to at most one Source 1 entity, and a threshold tuned directly on macro F0.5.
+3. A **LightGBM matcher** over 49 string, address-number, first-token, name-noise and candidate-context features, trained on 40% of train S1. It is followed by a **one-owner assignment**, since each Source 2/3 record belongs to at most one Source 1 entity, and a threshold tuned directly on macro F0.5.
 
 Every learned component is fitted on train only. Nothing depends on the country label, so France, which never appears in training, is handled the same way as US and India.
 
@@ -23,7 +23,8 @@ Headline numbers:
 | + learned pruning, address-number features (39) | 0.9580 | 0.9504 |
 | + exact-key candidate routes | 0.9635 | 0.9563 |
 | + first-token and relative-to-best features (46) | 0.9669 | 0.9598 |
-| **+ house-number + street-word key route — submitted** | **0.9680** | **0.9604** |
+| + house-number + street-word key route | 0.9680 | 0.9604 |
+| **+ 40% of train S1 as training data, 3 name-noise features (49) — submitted** | **0.9725** | **0.9655** |
 
 ---
 
@@ -89,7 +90,7 @@ EDA was done on a deterministic 5% dev sample plus the full data (`notebooks/A_0
 ```
 raw TSV ──► Parquet cache ──► normalize (C1) ──► blocking: 6 sparse TF-IDF searches (C2, ~50/S1)
         ──► features ──► learned pruner (≤10/S1, p≥0.01 → ~5/S1) ──► + exact-key routes (≤3/S1)
-        = candidate_pairs.tsv (~7/S1) ──► features (46) ──► LightGBM matcher ──► threshold + one-owner ──► matching_results.tsv
+        = candidate_pairs.tsv (~7/S1) ──► features (49) ──► LightGBM matcher ──► threshold + one-owner ──► matching_results.tsv
 ```
 
 All stages exchange validated Parquet files (`src/contracts.py`: schemas, id-existence, same-country and one-owner checks). Every step is chunked or streamed so the full pipeline runs on a 16 GB laptop.
@@ -215,7 +216,7 @@ The matcher accepts 83% of the true key-route pairs at 96.5% precision.
 
 ## 4. Matching Model
 
-**Features** (46; `src/features.py`, computed on the pruned candidates in 20k-S1 chunks and streamed to disk)
+**Features** (49; `src/features.py`, computed on the pruned candidates in 20k-S1 chunks and streamed to disk)
 
 - **Name**
   - rapidfuzz token-set, token-sort, partial and plain ratio on `name_core`
@@ -223,13 +224,14 @@ The matcher accepts 83% of the true key-route pairs at 96.5% precision.
   - char 2–3-gram TF-IDF cosine (`char_wb`, 50k vocabulary; the vectoriser is fitted once on a random 200k-text subsample of train and persisted, so train and test share one vocabulary)
   - length ratio
   - **first token vs the rest:** first-word equality (3-state) and Jaro–Winkler, token-set ratio of the rest, and a "first word swapped, rest identical" flag, which is the signature of distractor copies (`Kline Platinum Land Care` vs `Hurley Platinum Land Care`)
+  - **name noise:** `novel_real_words`, the number of record-name words that are real business words (≥ 4 letters, in ≥ 5 distinct train S1 names) with no fuzzy counterpart in the S1 name, since distractor copies insert real words while true-match noise only misspells; `rec_synth_share`, the share of record-name tokens built from the generator's syllables (`zetazeph`, `lyraxylo`: true matches whose name was replaced)
   - name frequency of both sides among the dataset's S1 (common names are weak evidence)
   - legal-form agreement: 3-state (equal / missing / conflict)
 - **Address**
   - token-set and partial ratio; TF-IDF cosine
   - empty-address flag
   - place Jaccard over `addr_places`
-  - house-number agreement (3-state), edit distance and log-gap
+  - house-number agreement (3-state), edit distance, log-gap and signed difference (clipped to ±20)
   - **number-set features:** both have numbers, number Jaccard, and the minimum edit distance and minimum log-gap between unmatched numbers. These separate digit typos (748 vs 548) from neighbouring buildings (2579 vs 2582).
   - a combined name/address score
 - **Candidate context**
@@ -249,7 +251,8 @@ The matcher accepts 83% of the true key-route pairs at 96.5% precision.
 - Parameters: `num_leaves` 127, `learning_rate` 0.05, feature/bagging fraction 0.8, L1 0.1 / L2 1.0, `scale_pos_weight = neg/pos`, up to 6000 rounds (the first full-train model hit the earlier 3000 cap while still improving).
 - Early stopping (80 rounds) on a held-out 10% of train-fold S1.
 - First model: trained on the wide candidates of 20% of train S1 (15.1M pairs, 1.01M positives).
-- Submitted model: trained on the final candidates (pruned + key routes) of 20% of train S1 (1.80M pairs, 57% positives), 46 features, threshold 0.61.
+- **Submitted model:** trained on the final candidates (pruned + key routes) of **40% of train S1** (3.60M pairs, 57% positives; early stopping on 0.51M), 49 features, 2,485 rounds, threshold 0.63. The pruner is the one fitted on 20% of S1 and is applied unchanged, so the test candidates are identical. Doubling the training S1 alone gave +0.0015 valid (0.9680 → 0.9695 with 46 features); the 3 name-noise features another +0.003.
+- Earlier: the same candidates with 20% of train S1 (1.80M pairs), 46 features, threshold 0.61 (valid 0.9680, leaderboard 0.9604).
 - Previous model: trained on the **pruned** candidates of 20% of train S1 (1.57M pairs, 64% positives, the hard cases near the boundary); threshold 0.60 (no precision guard). Per-record competitor counts (`n_s1_for_id`, `n_same_name_cands`) are counted over the unpruned candidates, which cover every S1 on both train and test (counting over the pruned 20%-S1 train file would show test ~5x more competitors than training — a skew found and fixed before the final submission). Trained in 2.5 min on an 8-vCPU AWS instance.
 
 **Decision.**
@@ -296,12 +299,13 @@ The matcher accepts 83% of the true key-route pairs at 96.5% precision.
 | + key routes: candidates per S1 test / pair recall / oracle (valid) | 6.97 / 0.9610 / 0.9873 |
 | + key routes — valid macro F0.5 / public leaderboard | 0.9635 / 0.9563 |
 | Key routes + 46 features — valid macro F0.5 / public leaderboard | 0.9669 / 0.9598 |
-| **Submitted (key routes incl. street route + 46 features) — valid macro F0.5** | **0.9680** (P 0.9917 / R 0.9307; US 0.9713, India 0.9630; singleton 0.9708) |
-| Submitted — S1 with ≥ 1 false match (valid) | 2,255 |
-| **Submitted — public leaderboard** | **0.9604** |
-| Submitted — test matches / candidates | 5,677,714 (3.28 per S1) / 12,126,654 (7.01 per S1) |
+| Key routes incl. street route + 46 features (20% S1) — valid / public leaderboard | 0.9680 / 0.9604 |
+| **Submitted (40% S1, 49 features) — valid macro F0.5** | **0.9725** on the same valid S1 as above; 0.9724 on its 176,647-S1 valid fold (P 0.9938 / R 0.9378; US 0.9753, India 0.9681; singleton 0.9780) |
+| Submitted — S1 with ≥ 1 false match (valid, 176,647 S1) | 3,430 |
+| **Submitted — public leaderboard** | **0.9655** |
+| Submitted — test matches / candidates | 5,690,360 (3.28 per S1) / 12,126,654 (7.01 per S1) |
 
-Before every upload, test matches per S1 were compared per country with the train-valid change of the same model (submitted: +0.10% on test vs +0.19% on valid; France +0.5%, India −0.1%, US +0.2%). The rejected peer-feature model failed this check (+7.6% vs +0.6%).
+Before every upload, test matches per S1 were compared per country with the train-valid change of the same model (submitted vs the previous upload: +0.22% on test vs +0.6% on valid; France −0.4%, India +0.2%, US +0.5%). The rejected peer-feature model failed this check (+7.6% vs +0.6%).
 
 Test output (first model): 5,374,874 matches, about 3.1 per S1, the same as train. Empty lists: France 6.6%, India 7.2%, US 6.5%. The unlabelled country behaves like the labelled ones.
 
