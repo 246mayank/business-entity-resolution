@@ -289,9 +289,15 @@ def build_features(dataset: str, s1_pct: int | None = None):
     import shutil
 
     t0 = time.time()
-    scan = pl.scan_parquet(C.candidates_path(dataset)).filter(in_subsample(s1_pct))
+    cand_path = C.candidates_path(dataset)
+    scan = pl.scan_parquet(cand_path).filter(in_subsample(s1_pct))
     s1_ids = scan.select("s1_id").unique().collect().sort("s1_id")
-    id_ctx = (pl.scan_parquet(C.candidates_path(dataset)).group_by("id").agg(
+    # Count competitors over the unpruned candidates when they exist. After --s1-pct + prune, the
+    # pruned train file holds only the featurised S1s, while test holds all of them: counting there
+    # would give test ~5x the competitors the model saw in training.
+    wide = cand_path.with_name(cand_path.stem + ".wide.parquet")
+    ctx_src = wide if wide.exists() else cand_path
+    id_ctx = (pl.scan_parquet(ctx_src).group_by("id").agg(
                   pl.len().cast(pl.Float32).alias("n_s1_for_id"),
                   (pl.col("blk_name_sim") >= NEAR_SAME_NAME).sum().cast(pl.Float32)
                     .alias("n_same_name_cands"))
