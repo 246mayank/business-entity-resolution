@@ -267,6 +267,9 @@ The matcher accepts 83% of the true key-route pairs at 96.5% precision.
 **Tried and not kept** (dev sample, same valid fold):
 - A second-stage re-ranker on out-of-fold stage-1 probabilities plus competition features (rank and margin within the record and within the S1): 0.9850 vs 0.9850, with more wrong merges. The stage-1 context features already carry this signal.
 - `learning_rate` 0.1 and/or no `scale_pos_weight`: 0.9845–0.9847 vs 0.9849 for the baseline, all within noise.
+- *Full train:* orphan negatives weighted ×1.8 in training and threshold tuning, so the model sees the test orphan rate (~40% vs 26% in train): +0.0003 on an orphan-weighted valid score. The same simulation shows the orphan shift explains only ~0.0024 of the 0.007–0.008 valid→leaderboard gap.
+- *Full train:* 63 / 255 leaves, `min_child_samples` 50, and a separate threshold for empty-address pairs: all within ±0.0002 of the baseline, below the ±0.0004 run-to-run noise.
+- *Full train:* a "twin" feature (another candidate of the same S1 has this record's house number and a better name) raised valid F0.5 by +0.0010 but **failed the pre-upload gate**: train-valid matches +0.14%, test matches +2.20%. It fires more often on test (18.0% vs 16.5%) because test has more records per S1, the same mechanism as the rejected peer features, so it was never uploaded.
 
 ---
 
