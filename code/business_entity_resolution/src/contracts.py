@@ -47,6 +47,7 @@ FLAG_ADDR = 2        # address or name+address blocker
 FLAG_POSTCODE = 4    # postcode-based key blocker
 FLAG_REVERSE = 8     # retrieved from the S2/S3 side (record -> best S1s)
 FLAG_EXACT = 16      # exact key (e.g. identical name_core)
+FLAG_KEY = 32        # exact-key routes added after pruning (src/keyroute.py)
 
 # C3 — model scores, one file per dataset, one row per C2 row.
 C3_COLUMNS = {"s1_id": pl.String, "id": pl.String, "prob": pl.Float32}

@@ -11,7 +11,7 @@ import joblib
 import numpy as np
 import polars as pl
 from rapidfuzz import fuzz
-from rapidfuzz.distance import Levenshtein
+from rapidfuzz.distance import JaroWinkler, Levenshtein
 from rapidfuzz.process import cpdist
 from sklearn.feature_extraction.text import TfidfVectorizer
 
@@ -93,7 +93,7 @@ NORM_COLS = ["entity_id", "name_core", "addr_clean", "legal_form",
              "house_no", "is_native_script", "addr_places"]
 
 FLAG_BITS = [("flag_name", 1), ("flag_addr", 2), ("flag_char4", 4),
-             ("flag_reverse", 8), ("flag_combo", 16)]
+             ("flag_reverse", 8), ("flag_combo", 16), ("flag_key", 32)]
 
 
 def _load_norm(ds: str, s: int) -> pl.DataFrame:
@@ -216,6 +216,7 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
     len2 = np.fromiter((len(s) for s in nc2), dtype=np.float32, count=len(nc2))
     hi, lo = np.maximum(len1, len2), np.minimum(len1, len2)
     num["name_len_ratio"] = np.divide(lo, hi, out=np.ones_like(hi), where=hi > 0)
+    num.update(_first_token_features(nc1, nc2))
     del nc1, nc2
 
     both_addr = ((pairs["ac1"].fill_null("") != "") & (pairs["ac2"].fill_null("") != "")).to_numpy()
@@ -252,7 +253,44 @@ def _chunk_features(pairs: pl.DataFrame, name_vec, addr_vec) -> pl.DataFrame:
             pl.col("blk_rev_rank").cast(pl.Float32),
         ]
     )
+    out = _rel_to_best_other(out, "name_tsr", "name_tsr_rel")
+    out = _rel_to_best_other(out, "addr_cos", "addr_cos_rel")
     return out.select(["s1_id", "id"] + [c for c in FEATURE_COLS if c not in ID_SCOPED])
+
+
+def _first_token_features(nc1: list[str], nc2: list[str]) -> dict[str, np.ndarray]:
+    """First word vs the rest of the name. The typical orphan false match is a copy of the true
+    record with the first word swapped (`Kline Platinum Land Care` vs `Hurley Platinum Land Care`)."""
+    s1 = [s.split(" ", 1) for s in nc1]
+    s2 = [s.split(" ", 1) for s in nc2]
+    f1, f2 = [p[0] for p in s1], [p[0] for p in s2]
+    r1 = [p[1] if len(p) > 1 else "" for p in s1]
+    r2 = [p[1] if len(p) > 1 else "" for p in s2]
+    both_f = np.array([a != "" and b != "" for a, b in zip(f1, f2)])
+    both_r = np.array([a != "" and b != "" for a, b in zip(r1, r2)])
+    first_eq = np.array([a == b for a, b in zip(f1, f2)])
+    jw = cpdist(f1, f2, scorer=JaroWinkler.normalized_similarity, workers=-1, dtype=np.float32)
+    rest = _fuzz_batch(r1, r2, fuzz.token_set_ratio)
+    return {
+        "first_tok_eq": np.where(both_f, np.where(first_eq, 1, -1), 0).astype(np.float32),
+        "first_tok_jw": np.where(both_f, jw, -1).astype(np.float32),
+        "rest_tsr": np.where(both_r, rest, -1).astype(np.float32),
+        "first_swap": (both_f & both_r & ~first_eq & (rest >= 0.95)).astype(np.float32),
+    }
+
+
+def _rel_to_best_other(df: pl.DataFrame, col: str, name: str) -> pl.DataFrame:
+    """`col` minus the best value among the S1's OTHER candidates (vs 0 for a single candidate).
+    A difference, not a count, so it stays in range when test has more candidates per S1."""
+    g = (df.group_by("s1_id").agg(pl.col(col).top_k(2).alias("_t"))
+           .with_columns(pl.col("_t").list.sort(descending=True))
+           .with_columns(pl.col("_t").list.get(0).alias("_m1"),
+                         pl.col("_t").list.get(1, null_on_oob=True).fill_null(0.0).alias("_m2"))
+           .drop("_t"))
+    other = pl.when(pl.col(col) >= pl.col("_m1")).then(pl.col("_m2")).otherwise(pl.col("_m1"))
+    return (df.join(g, on="s1_id", how="left", maintain_order="left")
+              .with_columns((pl.col(col) - other).cast(pl.Float32).alias(name))
+              .drop("_m1", "_m2"))
 
 
 # Per-id context, computed over the FULL C2 so an S1 subsample doesn't shrink the counts.
@@ -359,13 +397,14 @@ FEATURE_COLS = [
     "name_ns_ratio", "name_ns_part", "name_cos",
     "addr_tsr", "addr_part", "addr_cos",
     "lf_match", "hn_match",
-    "flag_name", "flag_addr", "flag_char4", "flag_reverse", "flag_combo",
+    "flag_name", "flag_addr", "flag_char4", "flag_reverse", "flag_combo", "flag_key",
     "rank_gap", "n_cands", "n_s1_for_id",
     "addr_empty", "name_len_ratio", "addr_name_combo",
     "is_s3", "ns2", "place_jaccard",
     "blk_name_sim", "blk_addr_sim", "blk_rank", "blk_rev_rank",
     "name_freq_s1", "name_freq_id", "n_same_name_cands",
     "num_both", "num_jaccard", "num_min_edit", "num_min_loggap", "hn_edit", "hn_loggap",
+    "first_tok_eq", "first_tok_jw", "rest_tsr", "first_swap", "name_tsr_rel", "addr_cos_rel",
 ]
 
 
