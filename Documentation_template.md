@@ -25,7 +25,7 @@ Headline numbers:
 | + first-token and relative-to-best features (46) | 0.9669 | 0.9598 |
 | + house-number + street-word key route | 0.9680 | 0.9604 |
 | + 40% of train S1 as training data, 3 name-noise features (49) | 0.9725 | 0.9655 |
-| **+ 60% of train S1 as training data — submitted** | **0.9730** | **0.9658** |
+| **+ 60% of train S1 as training data — submitted** | **0.9730** | **0.96601** |
 
 ---
 
