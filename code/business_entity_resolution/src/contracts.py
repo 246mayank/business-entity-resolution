@@ -1,4 +1,4 @@
-"""Interface contracts between pipeline stages (see docs/plan/00_combined_plan.md §3).
+"""Interface contracts between pipeline stages.
 
 Stages exchange Parquet files in cache/. Producers write through the `write_*`
 helpers (which validate first); consumers read through the `load_*` helpers and

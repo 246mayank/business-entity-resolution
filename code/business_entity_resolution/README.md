@@ -38,7 +38,7 @@ Run every command from this folder.
 (train 47 min for 20% of S1, test ~3 h), prune to ≤10 candidates per S1 (~5–6), add the exact-key routes (~0.7 per S1), then rebuild the full
 features on the kept pairs only (minutes) — the matcher trains and predicts on exactly `candidate_pairs.tsv`.
 
-Step 6 ends with the organisers' validator (`utils/validate_submission.py`, run from `<root>`), which must print `PASS`.
+Step 6 ends with the organisers' validator (`utils/validate_submission.py`, run from `<root>`; not redistributed in this repo, copy it from the challenge's student_resource), which must print `PASS`.
 
 ## Stages and modules
 

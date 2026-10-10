@@ -26,6 +26,7 @@ if ($tbd) {
 }
 
 if (-not (Test-Path "dataset/test" -PathType Container)) { throw "dataset/test not found: cannot validate, refusing to package" }
+if (-not (Test-Path "utils/validate_submission.py" -PathType Leaf)) { throw "utils/validate_submission.py not found: it is the organisers'' validator (not redistributed in this repo; copy it from the challenge''s student_resource to utils/validate_submission.py)" }
 $env:PYTHONIOENCODING = "utf-8"
 python utils/validate_submission.py --matching $Match --candidate $Cand --test-dir dataset/test
 if ($LASTEXITCODE -ne 0) { throw "validator failed: not packaging" }
