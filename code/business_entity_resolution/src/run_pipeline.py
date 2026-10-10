@@ -151,11 +151,16 @@ def step_write(dataset: str) -> None:
         print_report(rep, f"{dataset} valid fold")
 
 
+VALIDATOR_NOTE = "the organisers' validator (not redistributed in this repo; copy it from the challenge's student_resource to utils/validate_submission.py)"
+
+
 def step_validate(dataset: str) -> None:
     if dataset != "test":
         print("validate: only for test")
         return
     out = output_dir(dataset)
+    if not (config.ROOT / "utils" / "validate_submission.py").exists():
+        raise SystemExit("validate: utils/validate_submission.py not found. It is " + VALIDATOR_NOTE)
     subprocess.run([sys.executable, "utils/validate_submission.py",
                     "--matching", str(out / "matching_results.tsv"),
                     "--candidate", str(out / "candidate_pairs.tsv"),

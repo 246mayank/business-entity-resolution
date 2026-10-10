@@ -26,6 +26,10 @@ if grep -q "TBD" "$DOC"; then
   grep -n "TBD" "$DOC" >&2
 fi
 
+if [[ ! -f utils/validate_submission.py ]]; then
+  echo "utils/validate_submission.py not found: it is the organisers' validator (not redistributed in this repo; copy it from the challenge's student_resource to utils/validate_submission.py)" >&2
+  exit 1
+fi
 if [[ -d dataset/test ]]; then
   python3 utils/validate_submission.py --matching "$MATCH" --candidate "$CAND" --test-dir dataset/test
 else

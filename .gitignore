@@ -33,3 +33,9 @@ Thumbs.db
 CLAUDE.local.md
 logs/
 output/dev/
+
+# Organisers' material and local AI-assistant notes (not redistributed)
+utils/validate_submission.py
+problem_statement.md
+CLAUDE.md
+docs/plan/
